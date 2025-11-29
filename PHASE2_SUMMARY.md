@@ -199,6 +199,64 @@ go.mod                        - Added golang-jwt/jwt/v4 dependency
 
 ---
 
+## 🚀 Demo: Running Phase 2 Tests
+
+### Start the API Server
+
+**Terminal 1:**
+```powershell
+cd "c:\Users\Minh Tuan\Downloads\NetCentric Project\mangahub"
+go run cmd/api-server/main.go
+```
+
+Expected output:
+```json
+{"level":"info","msg":"API server listening on 0.0.0.0:8080","time":"..."}
+```
+
+### Run Automated Tests
+
+**Terminal 2:**
+```powershell
+cd "c:\Users\Minh Tuan\Downloads\NetCentric Project\mangahub"
+.\test-api.ps1
+```
+
+Expected results:
+```
+✅ Test 1: Register User - PASS
+✅ Test 2: Login User - PASS
+✅ Test 3: List Manga - PASS
+✅ Test 4: Get Manga by ID - PASS
+✅ Test 5: Add to Library (Protected) - PASS
+✅ Test 6: Get User Library (Protected) - PASS
+✅ Test 7: Update Progress (Protected) - PASS
+```
+
+### Manual Testing Examples
+
+**Register a new user:**
+```powershell
+curl -X POST http://localhost:8080/auth/register -H "Content-Type: application/json" -d '{\"username\":\"demo\",\"email\":\"demo@example.com\",\"password\":\"demo123\"}'
+```
+
+**Login and get JWT token:**
+```powershell
+curl -X POST http://localhost:8080/auth/login -H "Content-Type: application/json" -d '{\"username\":\"demo\",\"password\":\"demo123\"}'
+```
+
+**List all manga:**
+```powershell
+curl http://localhost:8080/manga?limit=10
+```
+
+**Add manga to library (replace YOUR_JWT_TOKEN):**
+```powershell
+curl -X POST http://localhost:8080/users/library -H "Authorization: Bearer YOUR_JWT_TOKEN" -H "Content-Type: application/json" -d '{\"manga_id\":\"3051a7b2-b47f-4e37-9204-231ce56b7dfb\",\"current_chapter\":1,\"status\":\"reading\"}'
+```
+
+---
+
 ## Next Steps (Phase 3)
 
 Phase 2 is complete and ready for Phase 3: TCP Sync Server
@@ -209,19 +267,6 @@ Suggested next implementations:
 3. WebSocket chat/discussion system
 4. gRPC service for high-performance API
 5. CLI tool for local management
-
----
-
-## Running the Server
-
-```powershell
-# Start the API server
-cd "c:\Users\Minh Tuan\Downloads\NetCentric Project\mangahub"
-go run cmd/api-server/main.go
-
-# Run tests
-.\test-api.ps1
-```
 
 ---
 

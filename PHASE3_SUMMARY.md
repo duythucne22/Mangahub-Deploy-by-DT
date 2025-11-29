@@ -192,6 +192,59 @@ mangahub/
 └── tcp-client.ps1           # Interactive client tool
 ```
 
+---
+
+## 🚀 Demo: Running Phase 3 Tests
+
+### Start the TCP Server
+
+**Terminal 1:**
+```powershell
+cd "c:\Users\Minh Tuan\Downloads\NetCentric Project\mangahub"
+go run cmd/tcp-server/main.go
+```
+
+Expected output:
+```json
+{"level":"info","msg":"TCP Progress Sync Server listening on 0.0.0.0:9090","time":"..."}
+```
+
+### Run Automated Tests
+
+**Terminal 2:**
+```powershell
+cd "c:\Users\Minh Tuan\Downloads\NetCentric Project\mangahub"
+.\test-tcp-simple.ps1
+```
+
+Expected results:
+```
+✅ Test 1: Server Status - PASS
+✅ Test 2: Single Client Message Send - PASS
+✅ Test 3: Broadcast to Multiple Clients - PASS
+```
+
+### Manual Testing with Interactive Client
+
+**Terminal 3 (Client 1):**
+```powershell
+.\tcp-client.ps1
+```
+
+**Terminal 4 (Client 2):**
+```powershell
+.\tcp-client.ps1
+```
+
+Type messages in either client to see them broadcast to all connected clients.
+
+**Example message format:**
+```json
+{"user_id":"user1","manga_id":"one-piece","chapter":100,"timestamp":1700000000}
+```
+
+---
+
 ## 🎯 Next Steps (Phase 4)
 
 With Phase 3 complete, the next phase will implement:

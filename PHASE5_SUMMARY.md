@@ -296,6 +296,80 @@ mangahub/
 └── go.mod                   # Added gorilla/websocket dependency
 ```
 
+---
+
+## 🚀 Demo: Running Phase 5 Tests
+
+### Start the API Server (with WebSocket support)
+
+**Terminal 1:**
+```powershell
+cd "c:\Users\Minh Tuan\Downloads\NetCentric Project\mangahub"
+go run cmd/api-server/main.go
+```
+
+Expected output:
+```json
+{"level":"info","msg":"Starting WebSocket hub...","time":"..."}
+{"level":"info","msg":"API server listening on 0.0.0.0:8080","time":"..."}
+```
+
+### Run Automated Tests
+
+**Terminal 2:**
+```powershell
+cd "c:\Users\Minh Tuan\Downloads\NetCentric Project\mangahub"
+.\test-websocket.ps1
+```
+
+Expected results:
+```
+✅ Test 1: Login and Get JWT Token - PASS
+✅ Test 2: WebSocket Connection with 2 Clients - PASS
+✅ Test 3: Broadcast Messages - PASS
+```
+
+### Manual Testing with Multiple Clients
+
+You can use any WebSocket client or browser console:
+
+**JavaScript Example (Browser Console):**
+```javascript
+// Get JWT token first from login
+const token = "YOUR_JWT_TOKEN";
+
+// Connect to WebSocket
+const ws = new WebSocket(`ws://localhost:8080/ws/chat?room_id=manga-discussion`);
+
+// Add authorization header (Note: some browsers don't support this)
+// Alternative: pass token in query string or first message
+
+ws.onopen = () => {
+    console.log('Connected to room: manga-discussion');
+    
+    // Send a message
+    ws.send(JSON.stringify({
+        type: 'message',
+        message: 'Hello everyone!'
+    }));
+};
+
+ws.onmessage = (event) => {
+    const msg = JSON.parse(event.data);
+    console.log(`[${msg.type}] ${msg.username}: ${msg.message}`);
+};
+
+ws.onclose = () => console.log('Disconnected');
+```
+
+**Test Room Info Endpoint:**
+```powershell
+# Get current clients in a room (requires JWT)
+curl -H "Authorization: Bearer YOUR_JWT_TOKEN" http://localhost:8080/ws/rooms/manga-discussion
+```
+
+---
+
 ## 🎯 Next Steps (Phase 6)
 
 With Phase 5 complete, the next phase will implement:
