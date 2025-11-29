@@ -8,12 +8,24 @@ import (
 	"github.com/yourusername/mangahub/pkg/models"
 )
 
+type ProtocolBridge interface {
+	BroadcastProgressUpdate(userID, username, mangaID string, chapter int32, status string) error
+}
+
 type Handler struct {
-	svc Service
+	svc    Service
+	bridge ProtocolBridge
 }
 
 func NewHandler(svc Service) *Handler {
 	return &Handler{svc: svc}
+}
+
+func NewHandlerWithBridge(svc Service, bridge ProtocolBridge) *Handler {
+	return &Handler{
+		svc:    svc,
+		bridge: bridge,
+	}
 }
 
 // POST /users/library  (add manga to library with initial status/progress)
@@ -99,6 +111,19 @@ func (h *Handler) UpdateProgress(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError,
 			models.NewErrorResponse(models.ErrCodeInternal, "unexpected error", nil))
 		return
+	}
+
+	// 🔄 BRIDGE: Broadcast update through all protocols
+	if h.bridge != nil {
+		go func() {
+			_ = h.bridge.BroadcastProgressUpdate(
+				user.ID,
+				user.Username,
+				req.MangaID,
+				int32(req.CurrentChapter),
+				req.Status,
+			)
+		}()
 	}
 
 	c.JSON(http.StatusOK,
