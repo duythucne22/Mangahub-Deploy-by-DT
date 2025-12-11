@@ -46,17 +46,18 @@ tmp/
 temp/
 *.tmp
 
-# Build artifacts
-api-server
-api-server.exe
-tcp-server
-tcp-server.exe
-udp-server
-udp-server.exe
-grpc-server
-grpc-server.exe
-cli
-cli.exe
+# Build artifacts (executables only, not directories)
+/api-server
+/api-server.exe
+/tcp-server
+/tcp-server.exe
+/udp-server
+/udp-server.exe
+/grpc-server
+/grpc-server.exe
+/cli
+/cli.exe
+bin/
 
 # Environment files
 .env
