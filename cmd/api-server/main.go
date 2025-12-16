@@ -16,8 +16,8 @@ import (
 	"log"
 	"net/http"
 
+	"mangahub/internal/activity"
 	"mangahub/internal/auth"
-	"mangahub/internal/chat"
 	"mangahub/internal/comment"
 	"mangahub/internal/leaderboard"
 	"mangahub/internal/manga"
@@ -56,20 +56,17 @@ func main() {
 	}
 	defer db.Close()
 
-	// Initialize UDP server (for bridge)
-	logger.Infof("Starting UDP notification server on %s:%d", cfg.UDP.Host, cfg.UDP.Port)
-	udpServer := udp.NewNotificationServer(cfg.UDP.Host, cfg.UDP.Port)
-	go func() {
-		if err := udpServer.Start(); err != nil {
-			logger.Errorf("UDP server error: %v", err)
-		}
-	}()
+	// UDP server runs separately as cmd/udp-server on port 9091
+	// We connect to it via protocol bridge, not start it here
 
 	// Initialize protocol bridge
-	logger.Infof("Initializing protocol bridge (TCP:%d, gRPC:%d)", cfg.TCP.Port, cfg.GRPC.Port)
+	logger.Infof("Initializing protocol bridge (TCP:%d, UDP:%d, gRPC:%d)", cfg.TCP.Port, cfg.UDP.Port, cfg.GRPC.Port)
+	// UDP client connection to standalone UDP server
+	udpClient := udp.NewNotificationServer(cfg.UDP.Host, cfg.UDP.Port)
+	
 	protocolBridge, err := protocols.NewProtocolBridge(
 		cfg.TCP.Host, cfg.TCP.Port,
-		udpServer,
+		udpClient,
 		cfg.GRPC.Host, cfg.GRPC.Port,
 	)
 	if err != nil {
@@ -89,14 +86,19 @@ func main() {
 	progressRepo := progress.NewRepository(db.DB)
 	progressSvc := progress.NewService(progressRepo)
 
-	// Use bridge-enabled handler if bridge is available
+	// Initialize Activity Feed system (before handlers need it)
+	activityRepo := activity.NewRepository(db.DB)
+	activitySvc := activity.NewService(activityRepo)
+	activityHandler := activity.NewHandler(activitySvc)
+
+	// Use bridge-enabled handler with activity recording
 	var progressHandler *progress.Handler
 	if protocolBridge != nil {
-		progressHandler = progress.NewHandlerWithBridge(progressSvc, protocolBridge)
-		logger.Infof("Progress handler initialized with protocol bridge")
+		progressHandler = progress.NewHandlerWithActivity(progressSvc, protocolBridge, activitySvc, mangaSvc)
+		logger.Infof("Progress handler initialized with protocol bridge and activity recording")
 	} else {
-		progressHandler = progress.NewHandler(progressSvc)
-		logger.Warnf("Progress handler initialized without protocol bridge")
+		progressHandler = progress.NewHandlerWithActivity(progressSvc, nil, activitySvc, mangaSvc)
+		logger.Warnf("Progress handler initialized without protocol bridge but with activity recording")
 	}
 
 	// Initialize WebSocket hub
@@ -108,15 +110,10 @@ func main() {
 	// Phase 2: Social Features Initialization
 	// Rating, Comment, Leaderboard, Chat persistence
 	// ================================================
-
-	// Initialize Chat repository for message persistence
-	chatRepo := chat.NewRepository(db.DB)
-	wsHub.SetChatRepository(chatRepo) // Enable chat persistence
-
 	// Initialize Rating system
 	ratingRepo := rating.NewRepository(db.DB)
 	ratingSvc := rating.NewService(ratingRepo)
-	ratingHandler := rating.NewHandler(ratingSvc)
+	ratingHandler := rating.NewHandlerWithActivity(ratingSvc, activitySvc, mangaSvc)
 
 	// Initialize Comment system
 	commentRepo := comment.NewRepository(db.DB)
@@ -179,6 +176,10 @@ func main() {
 	// ================================================
 	// Phase 2: Social Features Routes
 	// ================================================
+
+	// Activity Feed routes
+	api.GET("/activities", activityHandler.GetRecentActivities)
+	protected.GET("/activities/user/:userID", activityHandler.GetUserActivities)
 
 	// Rating routes (authenticated)
 	// POST /manga/:id/ratings - Submit or update rating

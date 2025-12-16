@@ -23,7 +23,7 @@ func main() {
 	}
 
 	// Initialize API client
-	baseURL := fmt.Sprintf("http://%s:%s", cfg.Server.Host, cfg.Server.Port)
+	baseURL := fmt.Sprintf("http://%s:%d", cfg.Server.Host, cfg.Server.Port)
 	api.InitClient(baseURL)
 
 	// Create the TUI application
