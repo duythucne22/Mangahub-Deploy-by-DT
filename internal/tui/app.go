@@ -10,6 +10,9 @@ package tui
 
 import (
 	"context"
+	"fmt"
+	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
@@ -17,6 +20,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"mangahub/internal/tui/api"
+	"mangahub/internal/tui/network"
 	"mangahub/internal/tui/styles"
 	"mangahub/internal/tui/views"
 	"mangahub/pkg/models"
@@ -37,7 +41,11 @@ const (
 	ViewDetail
 	ViewProfile
 	ViewActivity
-	ViewLogin
+	ViewStats
+	ViewSettings
+	ViewAuth
+	ViewHelp
+	ViewChat
 )
 
 // =====================================
@@ -115,6 +123,29 @@ type Model struct {
 	browseModel    views.BrowseModel
 	detailModel    views.DetailModel
 	activityModel  views.ActivityModel
+	statsModel     views.StatsModel
+	settingsModel  views.SettingsModel
+	authModel      views.AuthModel
+	helpModel      views.HelpModel
+
+	// Command palette
+	paletteModel views.PaletteModel
+
+	// Chat view
+	chatModel views.ChatModel
+
+	// WebSocket client for real-time chat
+	wsClient *network.WSClient
+
+	// UDP listener for real-time notifications
+	udpListener *network.UDPListener
+
+	// Notification state
+	unreadChatCount int
+	toast           *ToastModel
+
+	// Input mode tracking
+	inputMode bool // true when typing in forms (disables global shortcuts)
 
 	// Error handling
 	lastError error
@@ -150,6 +181,15 @@ func New() Model {
 		libraryModel:   views.NewLibrary(),
 		browseModel:    views.NewBrowse(),
 		activityModel:  views.NewActivity(),
+		statsModel:     views.NewStats(),
+		settingsModel:  views.NewSettings(),
+		authModel:      views.NewAuth(),
+		helpModel:      views.NewHelp(),
+		paletteModel:   views.NewPalette(),
+		chatModel:      views.NewChatModel(),
+		wsClient:       network.NewWSClient(),
+		udpListener:    network.NewUDPListener(),
+		toast:          NewToast(),
 	}
 }
 
@@ -174,7 +214,7 @@ func (m Model) checkAuth() tea.Msg {
 		if err != nil {
 			// Token expired or invalid
 			m.client.ClearToken()
-			return ViewChangeMsg{View: ViewLogin}
+			return ViewChangeMsg{View: ViewAuth}
 		}
 		return UserLoggedInMsg{User: user}
 	}
@@ -192,6 +232,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Update all view dimensions
 		m.dashboardModel.SetWidth(msg.Width - 4)
 		m.dashboardModel.SetHeight(msg.Height - 6)
+		// Update chat dimensions
+		m.chatModel, _ = m.chatModel.Update(msg)
 		m.searchModel.SetWidth(msg.Width - 4)
 		m.searchModel.SetHeight(msg.Height - 6)
 		m.libraryModel.SetWidth(msg.Width - 4)
@@ -200,10 +242,66 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.browseModel.SetHeight(msg.Height - 6)
 		m.activityModel.SetWidth(msg.Width - 4)
 		m.activityModel.SetHeight(msg.Height - 6)
+		m.statsModel.SetWidth(msg.Width - 4)
+		m.statsModel.SetHeight(msg.Height - 6)
+		m.settingsModel.SetWidth(msg.Width - 4)
+		m.settingsModel.SetHeight(msg.Height - 6)
+		m.authModel.SetWidth(msg.Width - 4)
+		m.authModel.SetHeight(msg.Height - 6)
+		m.helpModel.SetWidth(msg.Width - 4)
+		m.helpModel.SetHeight(msg.Height - 6)
+		m.paletteModel.SetWidth(msg.Width)
+		m.paletteModel.SetHeight(msg.Height)
 		return m, nil
 
 	case tea.KeyMsg:
-		// Global key handling
+		// Check if palette is open - if so, handle it first
+		if m.paletteModel.IsVisible() {
+			var cmd tea.Cmd
+			m.paletteModel, cmd = m.paletteModel.Update(msg)
+			return m, cmd
+		}
+
+		// Always handle these keys regardless of input mode
+		switch msg.String() {
+		case "ctrl+p":
+			// Open command palette
+			m.paletteModel.Show()
+			return m, m.paletteModel.Init()
+
+		case "ctrl+c":
+			// Force quit
+			return m, tea.Quit
+
+		case "?":
+			// Open help
+			if m.currentView != ViewHelp {
+				m.previousView = m.currentView
+				m.currentView = ViewHelp
+				return m, m.helpModel.Init()
+			}
+			return m, nil
+
+		case "esc":
+			// Always allow ESC to go back
+			if m.currentView != ViewDashboard {
+				m.currentView = m.previousView
+				if m.currentView == m.previousView {
+					m.currentView = ViewDashboard
+				}
+			}
+			return m, nil
+		}
+
+		// Detect input mode based on focused inputs in the active view
+		m.inputMode = m.isInputFocused()
+
+		// If in input mode, pass to view immediately (don't check global shortcuts)
+		if m.inputMode {
+			return m.updateCurrentView(msg)
+		}
+
+		// Global key handling (only when NOT in input mode)
 		switch {
 		case key.Matches(msg, m.keys.Quit):
 			return m, tea.Quit
@@ -226,8 +324,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case key.Matches(msg, m.keys.Library):
 			if !m.authenticated {
-				m.lastError = &authRequiredError{}
-				return m, nil
+				m.previousView = m.currentView
+				m.currentView = ViewAuth
+				return m, m.authModel.Init()
 			}
 			if m.currentView != ViewLibrary {
 				m.previousView = m.currentView
@@ -252,12 +351,64 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 
-		case key.Matches(msg, m.keys.Back):
-			if m.currentView != ViewDashboard {
-				m.currentView = m.previousView
-				if m.currentView == m.previousView {
-					m.currentView = ViewDashboard
+		case key.Matches(msg, m.keys.Stats):
+			if !m.authenticated {
+				m.previousView = m.currentView
+				m.currentView = ViewAuth
+				return m, m.authModel.Init()
+			}
+			if m.currentView != ViewStats {
+				m.previousView = m.currentView
+				m.currentView = ViewStats
+				return m, m.statsModel.Init()
+			}
+			return m, nil
+
+		case key.Matches(msg, m.keys.Settings):
+			if m.currentView != ViewSettings {
+				m.previousView = m.currentView
+				m.currentView = ViewSettings
+				return m, m.settingsModel.Init()
+			}
+			return m, nil
+
+		case key.Matches(msg, m.keys.Login):
+			if m.authenticated {
+				// Already logged in, logout instead
+				m.client.ClearToken()
+				m.authenticated = false
+				m.user = nil
+				// Stop UDP listener on logout
+				m.udpListener.Stop()
+				return m, nil
+			}
+			if m.currentView != ViewAuth {
+				m.previousView = m.currentView
+				m.currentView = ViewAuth
+				return m, m.authModel.Init()
+			}
+			return m, nil
+
+		case key.Matches(msg, m.keys.Chat):
+			// Go to chat view
+			if !m.authenticated {
+				m.previousView = m.currentView
+				m.currentView = ViewAuth
+				return m, m.authModel.Init()
+			}
+			if m.currentView != ViewChat {
+				m.previousView = m.currentView
+				m.currentView = ViewChat
+				// Connect to general chat if no room specified
+				if m.chatModel.RoomID() == "" {
+					m.chatModel.SetRoom("general", "General Chat", "", "")
 				}
+				wsURL := strings.Replace(m.client.GetBaseURL(), "http://", "ws://", 1)
+				wsURL = strings.Replace(wsURL, "https://", "wss://", 1)
+				return m, tea.Batch(
+					m.chatModel.Init(),
+					m.wsClient.Connect(wsURL, m.client.GetToken(), m.chatModel.RoomID()),
+				)
 			}
 			return m, nil
 
@@ -265,6 +416,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Pass to current view
 			return m.updateCurrentView(msg)
 		}
+
+	case views.CommandSelectedMsg:
+		// Handle command from palette
+		return m.handleCommand(msg.CommandID)
+
+	case views.PaletteCloseMsg:
+		m.paletteModel.Hide()
+		return m, nil
 
 	case ViewChangeMsg:
 		m.previousView = m.currentView
@@ -279,10 +438,130 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case UserLoggedInMsg:
 		m.user = msg.User
 		m.authenticated = true
-		return m, nil
+		// Update chat user info
+		m.chatModel.SetUser(msg.User.ID, msg.User.Username)
+		// Start UDP listener for real-time notifications
+		return m, m.udpListener.Start("9091")
 
 	case ErrorMsg:
 		m.lastError = msg.Error
+		return m, nil
+
+	// =====================================
+	// CHAT & WEBSOCKET MESSAGES
+	// =====================================
+
+	case network.JoinRoomMsg:
+		// User requested to join a chat room
+		if !m.authenticated {
+			m.previousView = m.currentView
+			m.currentView = ViewAuth
+			return m, m.authModel.Init()
+		}
+		// Set room info on chat model
+		m.chatModel.SetRoom(msg.RoomID, msg.RoomName, msg.MangaID, msg.MangaName)
+		m.previousView = m.currentView
+		m.currentView = ViewChat
+		// Connect WebSocket
+		wsURL := strings.Replace(m.client.GetBaseURL(), "http://", "ws://", 1)
+		wsURL = strings.Replace(wsURL, "https://", "wss://", 1)
+		return m, tea.Batch(
+			m.chatModel.Init(),
+			m.wsClient.Connect(wsURL, m.client.GetToken(), msg.RoomID),
+		)
+
+	case network.WSConnectedMsg:
+		// WebSocket connected successfully
+		m.chatModel.SetStatus(views.StatusConnected)
+		// Mark unread as read when viewing chat
+		if m.currentView == ViewChat {
+			m.unreadChatCount = 0
+		}
+		// Start listening for messages
+		return m, m.wsClient.ListenForMessages()
+
+	case network.WSDisconnectedMsg:
+		// WebSocket disconnected
+		m.chatModel.SetStatus(views.StatusDisconnected)
+		// If we're in chat view, try to reconnect
+		if m.currentView == ViewChat {
+			return m, m.wsClient.Reconnect()
+		}
+		return m, nil
+
+	case network.WSReconnectingMsg:
+		m.chatModel.SetStatus(views.StatusReconnecting)
+		return m, m.wsClient.Reconnect()
+
+	case network.WSErrorMsg:
+		m.lastError = msg.Err
+		m.chatModel.SetStatus(views.StatusDisconnected)
+		if m.currentView == ViewChat {
+			return m, m.wsClient.Reconnect()
+		}
+		return m, nil
+
+	case network.ChatMessageMsg:
+		// Incoming chat message from WebSocket
+		chatMsg := views.ChatMessageReceivedMsg{
+			ID:        msg.ID,
+			RoomID:    msg.RoomID,
+			UserID:    msg.UserID,
+			Username:  msg.Username,
+			Content:   msg.Content,
+			Type:      msg.Type,
+			Timestamp: msg.Timestamp,
+		}
+		// Update chat model
+		m.chatModel, _ = m.chatModel.Update(chatMsg)
+		// If not on chat view, increment unread count
+		if m.currentView != ViewChat {
+			m.unreadChatCount++
+		}
+		// Continue listening for messages
+		return m, m.wsClient.ListenForMessages()
+
+	case views.SendChatMsg:
+		// User wants to send a chat message
+		return m, m.wsClient.SendMessage(msg.RoomID, msg.Content)
+
+	// =====================================
+	// UDP NOTIFICATION MESSAGES
+	// =====================================
+
+	case network.UDPConnectedMsg:
+		// UDP listener connected - start receiving notifications
+		return m, m.udpListener.WaitForPacket()
+
+	case network.UDPDisconnectedMsg:
+		// UDP listener disconnected
+		// Could add reconnection logic here if needed
+		return m, nil
+
+	case network.UDPErrorMsg:
+		// UDP error occurred
+		m.lastError = msg.Err
+		return m, nil
+
+	case network.UDPNotificationMsg:
+		// Incoming UDP notification - show as toast
+		notification := network.FormatNotification(msg)
+		m.toast.Show(notification, 5*time.Second)
+		// Continue listening for more notifications
+		return m, m.udpListener.WaitForPacket()
+
+	case ToastTickMsg:
+		// Update toast timer
+		if m.toast != nil {
+			m.toast.Update(msg)
+		}
+		return m, nil
+
+	case ToastShowMsg:
+		// Show toast notification
+		if m.toast != nil {
+			m.toast.Show(msg.Content, msg.Duration)
+		}
 		return m, nil
 
 	case spinner.TickMsg:
@@ -345,9 +624,134 @@ func (m Model) updateCurrentView(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.detailModel, cmd = m.detailModel.Update(msg)
 	case ViewActivity:
 		m.activityModel, cmd = m.activityModel.Update(msg)
+	case ViewStats:
+		m.statsModel, cmd = m.statsModel.Update(msg)
+	case ViewSettings:
+		m.settingsModel, cmd = m.settingsModel.Update(msg)
+	case ViewAuth:
+		m.authModel, cmd = m.authModel.Update(msg)
+		// Check for successful login
+		if m.authModel.IsLoggedIn() {
+			user := m.authModel.GetUser()
+			if user != nil {
+				m.user = user
+				m.authenticated = true
+				// Return to previous view or dashboard
+				if m.previousView != ViewAuth {
+					m.currentView = m.previousView
+				} else {
+					m.currentView = ViewDashboard
+				}
+				return m, m.dashboardModel.Init()
+			}
+		}
+	case ViewHelp:
+		m.helpModel, cmd = m.helpModel.Update(msg)
+	case ViewChat:
+		m.chatModel, cmd = m.chatModel.Update(msg)
+		// Clear unread count when viewing chat
+		m.unreadChatCount = 0
 	}
 
 	return m, cmd
+}
+
+// handleCommand processes commands from the command palette
+func (m Model) handleCommand(commandID string) (tea.Model, tea.Cmd) {
+	switch commandID {
+	case "goto_dashboard":
+		m.previousView = m.currentView
+		m.currentView = ViewDashboard
+		return m, m.dashboardModel.Init()
+	case "goto_search":
+		m.previousView = m.currentView
+		m.currentView = ViewSearch
+		return m, m.searchModel.Focus()
+	case "goto_browse":
+		m.previousView = m.currentView
+		m.currentView = ViewBrowse
+		return m, m.browseModel.Init()
+	case "goto_library":
+		if !m.authenticated {
+			m.previousView = m.currentView
+			m.currentView = ViewAuth
+			return m, m.authModel.Init()
+		}
+		m.previousView = m.currentView
+		m.currentView = ViewLibrary
+		return m, m.libraryModel.Init()
+	case "goto_activity":
+		m.previousView = m.currentView
+		m.currentView = ViewActivity
+		return m, m.activityModel.Init()
+	case "goto_stats":
+		if !m.authenticated {
+			m.previousView = m.currentView
+			m.currentView = ViewAuth
+			return m, m.authModel.Init()
+		}
+		m.previousView = m.currentView
+		m.currentView = ViewStats
+		return m, m.statsModel.Init()
+	case "goto_settings":
+		m.previousView = m.currentView
+		m.currentView = ViewSettings
+		return m, m.settingsModel.Init()
+	case "login":
+		if m.authenticated {
+			m.client.ClearToken()
+			m.authenticated = false
+			m.user = nil
+			// Stop UDP listener on logout
+			m.udpListener.Stop()
+		} else {
+			m.previousView = m.currentView
+			m.currentView = ViewAuth
+			return m, m.authModel.Init()
+		}
+	case "help":
+		m.previousView = m.currentView
+		m.currentView = ViewHelp
+		return m, m.helpModel.Init()
+	case "goto_chat":
+		if !m.authenticated {
+			m.previousView = m.currentView
+			m.currentView = ViewAuth
+			return m, m.authModel.Init()
+		}
+		m.previousView = m.currentView
+		m.currentView = ViewChat
+		// Connect to general chat if no room specified
+		if m.chatModel.RoomID() == "" {
+			m.chatModel.SetRoom("general", "General Chat", "", "")
+		}
+		wsURL := strings.Replace(m.client.GetBaseURL(), "http://", "ws://", 1)
+		wsURL = strings.Replace(wsURL, "https://", "wss://", 1)
+		return m, tea.Batch(
+			m.chatModel.Init(),
+			m.wsClient.Connect(wsURL, m.client.GetToken(), m.chatModel.RoomID()),
+		)
+	case "refresh":
+		// Refresh current view
+		switch m.currentView {
+		case ViewDashboard:
+			return m, m.dashboardModel.Init()
+		case ViewLibrary:
+			return m, m.libraryModel.Init()
+		case ViewStats:
+			return m, m.statsModel.Init()
+		}
+	case "quit":
+		return m, tea.Quit
+	case "back":
+		if m.currentView != ViewDashboard {
+			m.currentView = m.previousView
+			if m.currentView == m.previousView {
+				m.currentView = ViewDashboard
+			}
+		}
+	}
+	return m, nil
 }
 
 // View renders the UI
@@ -370,11 +774,27 @@ func (m Model) View() string {
 		Height(contentHeight).
 		Render(content)
 
-	return lipgloss.JoinVertical(
+	base := lipgloss.JoinVertical(
 		lipgloss.Left,
 		mainContent,
 		footer,
 	)
+
+	// Overlay command palette if visible
+	if m.paletteModel.IsVisible() {
+		// Dim the background
+		dimmed := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#777777")).
+			Render(base)
+
+		// Render palette on top
+		overlay := m.paletteModel.View()
+
+		// Stack them
+		return dimmed + "\n" + overlay
+	}
+
+	return base
 }
 
 // =====================================
@@ -399,8 +819,16 @@ func (m Model) renderCurrentView() string {
 		content = m.browseModel.View()
 	case ViewActivity:
 		content = m.activityModel.View()
-	case ViewLogin:
-		content = m.renderLoginPlaceholder()
+	case ViewStats:
+		content = m.statsModel.View()
+	case ViewSettings:
+		content = m.settingsModel.View()
+	case ViewAuth:
+		content = m.authModel.View()
+	case ViewHelp:
+		content = m.helpModel.View()
+	case ViewChat:
+		content = m.chatModel.View()
 	default:
 		content = "View not implemented"
 	}
@@ -436,16 +864,28 @@ func (m Model) renderHeader() string {
 
 // renderFooter renders the bottom footer with keybindings
 func (m Model) renderFooter() string {
-	// Build help hints
+	// Simplified hints - encourage using command palette
 	hints := []string{
-		styles.RenderKeyHint("h", "home"),
-		styles.RenderKeyHint("s", "search"),
-		styles.RenderKeyHint("l", "library"),
-		styles.RenderKeyHint("b", "browse"),
-		styles.RenderKeyHint("a", "activity"),
+		styles.RenderKeyHint("Ctrl+P", "commands"),
 		styles.RenderKeyHint("?", "help"),
-		styles.RenderKeyHint("q", "quit"),
 	}
+
+	// Chat indicator with unread count
+	if m.unreadChatCount > 0 {
+		chatHint := fmt.Sprintf("💬 Chat (%d)", m.unreadChatCount)
+		hints = append(hints, styles.RenderKeyHint("c", chatHint))
+	} else {
+		hints = append(hints, styles.RenderKeyHint("c", "chat"))
+	}
+
+	// Add context-specific hints
+	if m.inputMode {
+		hints = append(hints, styles.RenderKeyHint("Esc", "cancel"))
+	} else {
+		hints = append(hints, styles.RenderKeyHint("Esc", "back"))
+	}
+
+	hints = append(hints, styles.RenderKeyHint("q", "quit"))
 
 	// Join hints with separator
 	hintsStr := ""
@@ -456,6 +896,12 @@ func (m Model) renderFooter() string {
 		hintsStr += hint
 	}
 
+	// Toast notification overlay
+	var toastLine string
+	if m.toast != nil && m.toast.Visible {
+		toastLine = m.toast.View() + "\n"
+	}
+
 	// Error display
 	var errorLine string
 	if m.lastError != nil {
@@ -463,6 +909,9 @@ func (m Model) renderFooter() string {
 	}
 
 	footer := m.theme.Footer.Width(m.width).Render(hintsStr)
+	if toastLine != "" {
+		footer = toastLine + footer
+	}
 	if errorLine != "" {
 		footer = errorLine + "\n" + footer
 	}
@@ -470,15 +919,96 @@ func (m Model) renderFooter() string {
 	return footer
 }
 
+// isInputFocused reports whether the active view has a focused text input/textarea.
+func (m Model) isInputFocused() bool {
+	switch m.currentView {
+	case ViewSearch:
+		return m.searchModel.IsInputFocused()
+	case ViewAuth:
+		return m.authModel.IsInputFocused()
+	case ViewChat:
+		return m.chatModel.IsInputFocused()
+	default:
+		return false
+	}
+}
+
 // =====================================
-// PLACEHOLDER VIEWS (to be implemented)
+// TOAST NOTIFICATION MODEL
 // =====================================
 
-func (m Model) renderLoginPlaceholder() string {
-	return m.theme.Container.Width(m.width - 4).Render(
-		m.theme.Title.Render("🔐 Login") + "\n\n" +
-			"Please login to continue.\n\n" +
-			"[Implementation coming in next phase]")
+// ToastModel represents a temporary notification popup
+type ToastModel struct {
+	Content  string
+	Visible  bool
+	Duration time.Duration
+	timer    *time.Timer
+}
+
+// ToastTickMsg signals toast timer tick
+type ToastTickMsg struct{}
+
+// ToastShowMsg shows a toast notification
+type ToastShowMsg struct {
+	Content  string
+	Duration time.Duration
+}
+
+// ToastHideMsg hides the toast
+type ToastHideMsg struct{}
+
+// NewToast creates a new toast model
+func NewToast() *ToastModel {
+	return &ToastModel{
+		Duration: 3 * time.Second,
+	}
+}
+
+// Show displays the toast with content
+func (t *ToastModel) Show(content string, duration time.Duration) tea.Cmd {
+	t.Content = content
+	t.Visible = true
+	if duration > 0 {
+		t.Duration = duration
+	} else {
+		t.Duration = 3 * time.Second
+	}
+
+	return tea.Tick(t.Duration, func(time.Time) tea.Msg {
+		return ToastHideMsg{}
+	})
+}
+
+// Hide hides the toast
+func (t *ToastModel) Hide() {
+	t.Visible = false
+	t.Content = ""
+}
+
+// Update handles toast messages
+func (t *ToastModel) Update(msg tea.Msg) tea.Cmd {
+	switch msg.(type) {
+	case ToastHideMsg:
+		t.Hide()
+	}
+	return nil
+}
+
+// View renders the toast notification
+func (t *ToastModel) View() string {
+	if !t.Visible {
+		return ""
+	}
+
+	toastStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color("#FF8800")).
+		Foreground(lipgloss.Color("#000000")).
+		Bold(true).
+		Padding(0, 2).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#FF8800"))
+
+	return toastStyle.Render("🔔 " + t.Content)
 }
 
 // =====================================

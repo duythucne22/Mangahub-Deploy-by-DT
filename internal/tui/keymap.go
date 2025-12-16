@@ -22,6 +22,10 @@ type KeyMap struct {
 	Library    key.Binding
 	Profile    key.Binding
 	Activity   key.Binding
+	Stats      key.Binding
+	Settings   key.Binding
+	Login      key.Binding
+	Chat       key.Binding // Chat view
 
 	// List navigation
 	Up         key.Binding
@@ -90,6 +94,22 @@ func DefaultKeyMap() KeyMap {
 		Activity: key.NewBinding(
 			key.WithKeys("a"),
 			key.WithHelp("a", "activity"),
+		),
+		Stats: key.NewBinding(
+			key.WithKeys("t"),
+			key.WithHelp("t", "stats"),
+		),
+		Settings: key.NewBinding(
+			key.WithKeys("x"),
+			key.WithHelp("x", "settings"),
+		),
+		Login: key.NewBinding(
+			key.WithKeys("L"),
+			key.WithHelp("L", "login"),
+		),
+		Chat: key.NewBinding(
+			key.WithKeys("c"),
+			key.WithHelp("c", "chat"),
 		),
 
 		// === LIST NAVIGATION ===

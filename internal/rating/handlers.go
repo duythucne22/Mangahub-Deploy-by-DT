@@ -7,21 +7,42 @@
 package rating
 
 import (
+	"context"
 	"net/http"
 
-	"github.com/gin-gonic/gin"
 	"mangahub/internal/auth"
 	"mangahub/pkg/models"
+
+	"github.com/gin-gonic/gin"
 )
+
+type ActivityRecorder interface {
+	RecordMangaRated(ctx context.Context, userID, username, mangaID, mangaTitle string, rating float64) error
+}
 
 // Handler handles HTTP requests for ratings
 type Handler struct {
-	svc Service
+	svc              Service
+	activityRecorder ActivityRecorder
+	mangaSvc         MangaService
+}
+
+type MangaService interface {
+	GetByID(ctx context.Context, id string) (*models.Manga, error)
 }
 
 // NewHandler creates a new rating handler
 func NewHandler(svc Service) *Handler {
 	return &Handler{svc: svc}
+}
+
+// NewHandlerWithActivity creates handler with activity recording
+func NewHandlerWithActivity(svc Service, activityRecorder ActivityRecorder, mangaSvc MangaService) *Handler {
+	return &Handler{
+		svc:              svc,
+		activityRecorder: activityRecorder,
+		mangaSvc:         mangaSvc,
+	}
 }
 
 // SubmitRating handles POST /manga/:id/ratings
@@ -63,6 +84,23 @@ func (h *Handler) SubmitRating(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError,
 			models.NewErrorResponse(models.ErrCodeInternal, "failed to submit rating", nil))
 		return
+	}
+
+	// 📝 ACTIVITY: Record rating activity
+	if h.activityRecorder != nil && h.mangaSvc != nil {
+		go func() {
+			manga, err := h.mangaSvc.GetByID(c.Request.Context(), rating.MangaID)
+			if err == nil {
+				_ = h.activityRecorder.RecordMangaRated(
+					c.Request.Context(),
+					user.ID,
+					user.Username,
+					rating.MangaID,
+					manga.Title,
+					rating.OverallRating,
+				)
+			}
+		}()
 	}
 
 	c.JSON(http.StatusOK,

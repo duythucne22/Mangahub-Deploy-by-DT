@@ -117,6 +117,13 @@ func (c *Client) GetToken() string {
 	return c.token
 }
 
+// GetBaseURL returns the base API URL
+func (c *Client) GetBaseURL() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.baseURL
+}
+
 // IsAuthenticated checks if user is logged in
 func (c *Client) IsAuthenticated() bool {
 	return c.GetToken() != ""
@@ -628,4 +635,155 @@ func (c *Client) HealthCheck(ctx context.Context) bool {
 	}
 	defer resp.Body.Close()
 	return resp.StatusCode == http.StatusOK
+}
+
+// =====================================
+// STATISTICS API
+// =====================================
+
+// GetStatistics retrieves user reading statistics
+func (c *Client) GetStatistics(ctx context.Context) (*models.ReadingStats, error) {
+	resp, err := c.doRequest(ctx, "GET", "/api/stats", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	type StatsResponse struct {
+		Success bool                 `json:"success"`
+		Data    *models.ReadingStats `json:"data"`
+	}
+
+	result, err := parseResponse[StatsResponse](resp)
+	if err != nil {
+		return nil, err
+	}
+
+	return result.Data, nil
+}
+
+// GetStatsOverview retrieves statistics overview
+func (c *Client) GetStatsOverview(ctx context.Context) (*models.StatsOverview, error) {
+	resp, err := c.doRequest(ctx, "GET", "/api/stats/overview", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	type OverviewResponse struct {
+		Success bool                  `json:"success"`
+		Data    *models.StatsOverview `json:"data"`
+	}
+
+	result, err := parseResponse[OverviewResponse](resp)
+	if err != nil {
+		return nil, err
+	}
+
+	return result.Data, nil
+}
+
+// GetReadingHeatmap retrieves reading heatmap data
+func (c *Client) GetReadingHeatmap(ctx context.Context, days int) ([]models.ReadingHeatmap, error) {
+	params := url.Values{}
+	params.Set("days", fmt.Sprintf("%d", days))
+
+	resp, err := c.doRequest(ctx, "GET", "/api/stats/heatmap?"+params.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	type HeatmapResponse struct {
+		Success bool                    `json:"success"`
+		Data    []models.ReadingHeatmap `json:"data"`
+	}
+
+	result, err := parseResponse[HeatmapResponse](resp)
+	if err != nil {
+		return nil, err
+	}
+
+	return result.Data, nil
+}
+
+// =====================================
+// PREFERENCES API
+// =====================================
+
+// GetPreferences retrieves user preferences
+func (c *Client) GetPreferences(ctx context.Context) (*models.UserPreferences, error) {
+	resp, err := c.doRequest(ctx, "GET", "/api/preferences", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	type PreferencesResponse struct {
+		Success bool                    `json:"success"`
+		Data    *models.UserPreferences `json:"data"`
+	}
+
+	result, err := parseResponse[PreferencesResponse](resp)
+	if err != nil {
+		return nil, err
+	}
+
+	return result.Data, nil
+}
+
+// UpdatePreferences updates user preferences
+func (c *Client) UpdatePreferences(ctx context.Context, prefs *models.UpdatePreferencesRequest) (*models.UserPreferences, error) {
+	resp, err := c.doRequest(ctx, "PUT", "/api/preferences", prefs)
+	if err != nil {
+		return nil, err
+	}
+
+	type PreferencesResponse struct {
+		Success bool                    `json:"success"`
+		Data    *models.UserPreferences `json:"data"`
+	}
+
+	result, err := parseResponse[PreferencesResponse](resp)
+	if err != nil {
+		return nil, err
+	}
+
+	return result.Data, nil
+}
+
+// ResetPreferences resets preferences to defaults
+func (c *Client) ResetPreferences(ctx context.Context) (*models.UserPreferences, error) {
+	resp, err := c.doRequest(ctx, "POST", "/api/preferences/reset", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	type PreferencesResponse struct {
+		Success bool                    `json:"success"`
+		Data    *models.UserPreferences `json:"data"`
+	}
+
+	result, err := parseResponse[PreferencesResponse](resp)
+	if err != nil {
+		return nil, err
+	}
+
+	return result.Data, nil
+}
+
+// ExportUserData exports user data
+func (c *Client) ExportUserData(ctx context.Context) (*models.ExportDataResponse, error) {
+	resp, err := c.doRequest(ctx, "POST", "/api/preferences/export", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	type ExportResponse struct {
+		Success bool                       `json:"success"`
+		Data    *models.ExportDataResponse `json:"data"`
+	}
+
+	result, err := parseResponse[ExportResponse](resp)
+	if err != nil {
+		return nil, err
+	}
+
+	return result.Data, nil
 }
