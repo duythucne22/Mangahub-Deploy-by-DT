@@ -221,6 +221,21 @@ func (c *MangaDexClient) SearchManga(ctx context.Context, query string, limit, o
 	return &result, nil
 }
 
+// SearchMangaFiltered searches and returns normalized ExternalMangaData
+// Only essential fields are returned to reduce downstream parsing
+func (c *MangaDexClient) SearchMangaFiltered(ctx context.Context, query string, limit, offset int) ([]models.ExternalMangaData, error) {
+	res, err := c.SearchManga(ctx, query, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+
+	var items []models.ExternalMangaData
+	for _, m := range res.Data {
+		items = append(items, m.ToExternalMangaData())
+	}
+	return items, nil
+}
+
 // GetManga retrieves manga details by ID
 func (c *MangaDexClient) GetManga(ctx context.Context, mangaID string) (*MangaDexManga, error) {
 	// Wait for rate limiter

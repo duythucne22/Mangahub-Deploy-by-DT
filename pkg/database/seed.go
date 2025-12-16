@@ -6,8 +6,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/google/uuid"
 	"mangahub/pkg/models"
+
+	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -374,17 +375,17 @@ func (db *DB) seedReadingStats() error {
 	now := time.Now()
 	for daysAgo := 30; daysAgo >= 0; daysAgo-- {
 		date := now.Add(-time.Duration(daysAgo) * 24 * time.Hour)
-		
+
 		// Random number of chapters read per day (0-5)
 		chaptersPerDay := daysAgo % 6
-		
+
 		for i := 0; i < chaptersPerDay; i++ {
 			user := users[i%len(users)]
 			manga := mangaList[i%len(mangaList)]
 			chapterNum := (30-daysAgo)*2 + i + 1 // Sequential chapters
-			
+
 			readTime := date.Add(time.Duration(i*2) * time.Hour)
-			
+
 			_, err := db.Exec(`
 				INSERT INTO chapter_history (id, user_id, manga_id, manga_title, chapter_number, read_at)
 				VALUES (?, ?, ?, ?, ?, ?)`,

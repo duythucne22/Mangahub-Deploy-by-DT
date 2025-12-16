@@ -159,6 +159,21 @@ func (c *JikanClient) SearchManga(ctx context.Context, query string, page, limit
 	return &result, nil
 }
 
+// SearchMangaFiltered searches MAL via Jikan and returns normalized ExternalMangaData
+// Only essential metadata fields are returned to align with our database model.
+func (c *JikanClient) SearchMangaFiltered(ctx context.Context, query string, page, limit int) ([]models.ExternalMangaData, error) {
+	res, err := c.SearchManga(ctx, query, page, limit)
+	if err != nil {
+		return nil, err
+	}
+
+	var items []models.ExternalMangaData
+	for _, m := range res.Data {
+		items = append(items, m.ToExternalMangaData())
+	}
+	return items, nil
+}
+
 // GetManga retrieves manga details by MAL ID
 func (c *JikanClient) GetManga(ctx context.Context, malID int) (*JikanMangaData, error) {
 	reqURL := fmt.Sprintf("%s/manga/%d/full", c.baseURL, malID)
