@@ -27,7 +27,9 @@ import (
 
 func main() {
 	// Load configuration
-	cfg, err := config.Load("./configs/development.yaml")
+	// Auto-detects: Railway env -> production.yaml, local -> development.yaml
+	// ENV vars override config file values
+	cfg, err := config.Load("")
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}

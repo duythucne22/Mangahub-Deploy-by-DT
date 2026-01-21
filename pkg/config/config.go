@@ -2,6 +2,8 @@ package config
 
 import (
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/viper"
@@ -120,27 +122,51 @@ type AniListConfig struct {
 	RetryAttempts int           `mapstructure:"retry_attempts"`
 }
 
-// Load reads configuration from file
+// Load reads configuration from file and environment variables
+// Priority: ENV vars > config file > defaults
 func Load(configPath string) (*Config, error) {
-	viper.SetConfigName("development")
+	// Set defaults first
+	setDefaults()
+
+	// Determine which config file to load
+	// Priority: configPath arg > CONFIG_FILE env > "production" if GO_ENV=production > "development"
+	configName := "development"
+	if os.Getenv("GO_ENV") == "production" || os.Getenv("RAILWAY_ENVIRONMENT") != "" {
+		configName = "production"
+	}
+	if envConfig := os.Getenv("CONFIG_FILE"); envConfig != "" {
+		// If CONFIG_FILE is set, extract name without extension
+		configName = strings.TrimSuffix(envConfig, ".yaml")
+		configName = strings.TrimPrefix(configName, "./configs/")
+	}
+	if configPath != "" && configPath != "./configs/development.yaml" {
+		configName = strings.TrimSuffix(configPath, ".yaml")
+		configName = strings.TrimPrefix(configName, "./configs/")
+	}
+
+	viper.SetConfigName(configName)
 	viper.SetConfigType("yaml")
 	viper.AddConfigPath("./configs")
 	viper.AddConfigPath(".")
 
-	// Set defaults
-	setDefaults()
-
-	// Read config file
+	// Read config file (optional - ENV can override everything)
 	if err := viper.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
-			fmt.Println("Config file not found, using defaults")
+			fmt.Printf("Config file '%s' not found, using defaults + ENV\n", configName)
 		} else {
 			return nil, fmt.Errorf("failed to read config: %w", err)
 		}
+	} else {
+		fmt.Printf("Loaded config: %s\n", viper.ConfigFileUsed())
 	}
 
-	// Allow environment variable override
+	// CRITICAL: Bind environment variables to config keys
+	// This allows Railway/Neon ENV vars to override config
+	bindEnvVars()
+
+	// Enable automatic ENV reading (for any KEY -> key mapping)
 	viper.AutomaticEnv()
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 
 	var config Config
 	if err := viper.Unmarshal(&config); err != nil {
@@ -148,6 +174,32 @@ func Load(configPath string) (*Config, error) {
 	}
 
 	return &config, nil
+}
+
+// bindEnvVars explicitly maps environment variables to config keys
+// This is required because Viper's AutomaticEnv doesn't handle nested keys well
+func bindEnvVars() {
+	// Server config - Railway sets PORT automatically
+	viper.BindEnv("server.port", "PORT")
+	viper.BindEnv("server.host", "SERVER_HOST")
+	viper.BindEnv("server.mode", "GIN_MODE")
+
+	// Database config - Neon connection details
+	viper.BindEnv("database.host", "DB_HOST")
+	viper.BindEnv("database.port", "DB_PORT")
+	viper.BindEnv("database.user", "DB_USER")
+	viper.BindEnv("database.password", "DB_PASSWORD")
+	viper.BindEnv("database.database", "DB_NAME")
+	viper.BindEnv("database.ssl_mode", "DB_SSLMODE")
+
+	// JWT config
+	viper.BindEnv("jwt.secret", "JWT_SECRET")
+
+	// Logging
+	viper.BindEnv("logging.level", "LOG_LEVEL")
+
+	// gRPC (if needed)
+	viper.BindEnv("grpc.port", "GRPC_PORT")
 }
 
 func setDefaults() {

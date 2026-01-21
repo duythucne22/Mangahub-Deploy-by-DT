@@ -1,22 +1,24 @@
 # MangaHub Production Configuration (Railway + Neon)
-# Environment variables override these defaults
+# Environment variables OVERRIDE these defaults via bindEnvVars()
+# Set in Railway Dashboard: DB_HOST, DB_USER, DB_PASSWORD, DB_NAME, DB_SSLMODE, JWT_SECRET
 
 server:
-  host: "${SERVER_HOST:-0.0.0.0}"
-  port: ${PORT:-8080}  # Railway sets PORT automatically
+  host: "0.0.0.0"           # Railway binds to 0.0.0.0
+  port: 8080                # Overridden by Railway's PORT env var
   read_timeout: "30s"
   write_timeout: "30s"
   idle_timeout: "120s"
-  mode: "${GIN_MODE:-release}"
+  mode: "release"           # Overridden by GIN_MODE env var
 
 # PostgreSQL Database Configuration (Neon)
+# ALL of these are overridden by Railway env vars: DB_HOST, DB_USER, DB_PASSWORD, DB_NAME, DB_SSLMODE
 database:
-  host: "${DB_HOST:-localhost}"
-  port: ${DB_PORT:-5432}
-  user: "${DB_USER:-postgres}"
-  password: "${DB_PASSWORD}"
-  database: "${DB_NAME:-postgres}"
-  ssl_mode: "${DB_SSLMODE:-require}"  # Always require SSL in production
+  host: "localhost"         # Overridden by DB_HOST
+  port: 5432                # Overridden by DB_PORT
+  user: "postgres"          # Overridden by DB_USER
+  password: ""              # Overridden by DB_PASSWORD
+  database: "postgres"      # Overridden by DB_NAME
+  ssl_mode: "require"       # Overridden by DB_SSLMODE (always require for Neon)
   max_open_conns: 25
   max_idle_conns: 5
   conn_max_lifetime: "5m"
@@ -24,7 +26,7 @@ database:
   timeout: "10s"
 
 jwt:
-  secret: "${JWT_SECRET}"  # MUST set in Railway environment
+  secret: "CHANGE_ME_IN_RAILWAY_ENV"  # Overridden by JWT_SECRET env var
   expiration: "24h"
   issuer: "mangahub"
 
@@ -41,15 +43,15 @@ udp:
   port: 4000
   buffer_size: 1024
 
-# gRPC Search Service (optional - deploy as separate Railway service if needed)
+# gRPC Search Service (runs on separate port - may not work on Railway free tier)
 grpc:
   host: "0.0.0.0"
-  port: ${GRPC_PORT:-50051}
+  port: 50051               # Overridden by GRPC_PORT (Railway only exposes 1 port)
 
-# WebSocket Chat Service (runs on same port as HTTP)
+# WebSocket Chat Service (runs on same HTTP port - works on Railway!)
 websocket:
   host: "0.0.0.0"
-  port: ${PORT:-8080}
+  port: 8080                # Uses same port as HTTP (Railway's PORT)
   read_buffer_size: 1024
   write_buffer_size: 1024
   handshake_timeout: "10s"
@@ -57,7 +59,7 @@ websocket:
   max_message_size: 8192
 
 logging:
-  level: "${LOG_LEVEL:-info}"
+  level: "info"             # Overridden by LOG_LEVEL
   format: "json"
   output: "stdout"
 
