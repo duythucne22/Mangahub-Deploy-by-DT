@@ -4,98 +4,90 @@ import (
 	"time"
 )
 
-// ReadingStats represents comprehensive reading statistics for a user
-type ReadingStats struct {
-	UserID            string         `json:"user_id" db:"user_id"`
-	TotalMangaRead    int            `json:"total_manga_read"`
-	TotalChaptersRead int            `json:"total_chapters_read"`
-	TotalPagesRead    int            `json:"total_pages_read"`
-	AverageRating     float64        `json:"average_rating"`
-	ReadingStreak     int            `json:"reading_streak_days"`
-	LongestStreak     int            `json:"longest_streak_days"`
-	DailyAverage      float64        `json:"daily_average_chapters"`
-	TotalTimeMinutes  int            `json:"total_time_minutes"`
-	MostReadGenre     string         `json:"most_read_genre"`
-	FavoriteAuthor    string         `json:"favorite_author"`
-	FastestSeries     *SeriesRecord  `json:"fastest_series,omitempty"`
-	SlowestSeries     *SeriesRecord  `json:"slowest_series,omitempty"`
-	GenreDistribution []GenreCount   `json:"genre_distribution"`
-	MonthlyStats      []MonthlyStats `json:"monthly_stats"`
-	UpdatedAt         time.Time      `json:"updated_at"`
-}
-
-// SeriesRecord represents a manga reading record (fastest/slowest completion)
-type SeriesRecord struct {
-	MangaID  string `json:"manga_id"`
-	Title    string `json:"title"`
-	Days     int    `json:"days"`
-	Chapters int    `json:"chapters"`
-}
-
-// GenreCount represents genre reading distribution
-type GenreCount struct {
-	Genre      string  `json:"genre"`
-	Count      int     `json:"count"`
-	Percentage float64 `json:"percentage"`
-}
-
-// MonthlyStats represents reading stats for a specific month
-type MonthlyStats struct {
-	Year          int     `json:"year"`
-	Month         int     `json:"month"`
-	ChaptersRead  int     `json:"chapters_read"`
-	MangaStarted  int     `json:"manga_started"`
-	MangaFinished int     `json:"manga_finished"`
-	ReadingDays   int     `json:"reading_days"`
-	AveragePerDay float64 `json:"average_per_day"`
-}
-
-// DailyStats represents daily reading activity
-type DailyStats struct {
-	ID           string    `json:"id" db:"id"`
-	UserID       string    `json:"user_id" db:"user_id"`
-	Date         time.Time `json:"date" db:"date"`
-	ChaptersRead int       `json:"chapters_read" db:"chapters_read"`
-	PagesRead    int       `json:"pages_read" db:"pages_read"`
-	TimeMinutes  int       `json:"time_minutes" db:"time_minutes"`
-	MangaCount   int       `json:"manga_count" db:"manga_count"`
-	CreatedAt    time.Time `json:"created_at" db:"created_at"`
+// MangaStats represents manga statistics - EXACTLY matches schema.sql
+type MangaStats struct {
+	MangaID    string    `json:"manga_id" db:"manga_id"`
+	CommentCount int     `json:"comment_count" db:"comment_count"`
+	LikeCount    int     `json:"like_count" db:"like_count"`
+	ChatCount    int     `json:"chat_count" db:"chat_count"`
+	WeeklyScore  int     `json:"weekly_score" db:"weekly_score"`
 	UpdatedAt    time.Time `json:"updated_at" db:"updated_at"`
 }
 
-// ChapterHistory records individual chapter reads for detailed tracking
-type ChapterHistory struct {
-	ID            string    `json:"id" db:"id"`
-	UserID        string    `json:"user_id" db:"user_id"`
-	MangaID       string    `json:"manga_id" db:"manga_id"`
-	ChapterNumber int       `json:"chapter_number" db:"chapter_number"`
-	PagesRead     int       `json:"pages_read" db:"pages_read"`
-	TimeMinutes   int       `json:"time_minutes" db:"time_minutes"`
-	ReadAt        time.Time `json:"read_at" db:"read_at"`
-	CreatedAt     time.Time `json:"created_at" db:"created_at"`
+// HotManga represents a manga with its hot score for ranking
+type HotManga struct {
+	MangaID    string `json:"manga_id"`
+	Title      string `json:"title"`
+	CoverURL   string `json:"cover_url,omitempty"`
+	WeeklyScore int   `json:"weekly_score"`
+	Rank       int    `json:"rank"`
 }
 
-// ReadingHeatmap represents reading activity for heatmap visualization
-type ReadingHeatmap struct {
-	Date         string `json:"date"`
-	ChaptersRead int    `json:"chapters_read"`
-	Level        int    `json:"level"` // 0-4 intensity level
+// TrendingManga represents trending manga based on recent activity
+type TrendingManga struct {
+	MangaID     string `json:"manga_id"`
+	Title       string `json:"title"`
+	ActivityCount int  `json:"activity_count"`
+	Timeframe   string `json:"timeframe"` // "24h", "7d", "30d"
 }
 
-// StatsOverview provides a quick summary for dashboard display
-type StatsOverview struct {
-	TotalManga     int     `json:"total_manga"`
-	TotalChapters  int     `json:"total_chapters"`
-	CurrentStreak  int     `json:"current_streak"`
-	ThisWeekCount  int     `json:"this_week_count"`
-	ThisMonthCount int     `json:"this_month_count"`
-	AverageRating  float64 `json:"average_rating"`
+// Notification represents a broadcast notification - EXACTLY matches schema.sql
+type Notification struct {
+	ID        string    `json:"id" db:"id"`
+	Message   string    `json:"message" db:"message"`
+	CreatedAt time.Time `json:"created_at" db:"created_at"`
 }
 
-// RecordChapterRequest is used to record a chapter read
-type RecordChapterRequest struct {
-	MangaID       string `json:"manga_id" validate:"required"`
-	ChapterNumber int    `json:"chapter_number" validate:"required,min=0"`
-	PagesRead     int    `json:"pages_read,omitempty"`
-	TimeMinutes   int    `json:"time_minutes,omitempty"`
+// StatsResponse provides aggregated statistics for the frontend
+type StatsResponse struct {
+	HotManga      []HotManga      `json:"hot_manga"`
+	ActiveChats   []TrendingManga `json:"active_chats"`
+	RecentActivity []ActivityEvent `json:"recent_activity"`
+	TotalComments int             `json:"total_comments"`
+	TotalChats    int             `json:"total_chats"`
+}
+
+// RankedManga represents a manga with ranking and full stats
+type RankedManga struct {
+    Manga Manga      `json:"manga"`
+    Stats MangaStats `json:"stats"`
+    Rank  int        `json:"rank"`
+}
+
+// RankedMangaResponse represents paginated ranked manga results
+type RankedMangaResponse struct {
+    Data    []RankedManga `json:"data"`
+    Total   int           `json:"total"`
+    Limit   int           `json:"limit"`
+    Offset  int           `json:"offset"`
+    HasMore bool          `json:"has_more"`
+}
+
+// LeaderboardEntry represents a user leaderboard row
+type LeaderboardEntry struct {
+	UserID   string `json:"user_id"`
+	Username string `json:"username"`
+	Score    int    `json:"score"`
+	Rank     int    `json:"rank"`
+	Category string `json:"category"`
+}
+
+// UserStatistics represents aggregated stats for a user
+type UserStatistics struct {
+	UserID        string  `json:"user_id"`
+	TotalComments int     `json:"total_comments"`
+	TotalChats    int     `json:"total_chats"`
+	MangaCount    int     `json:"manga_count"`
+	AverageRating float64 `json:"average_rating"`
+	CurrentStreak int     `json:"current_streak"`
+	TopGenres     []Genre `json:"top_genres"`
+}
+
+// StatsUpdate represents partial updates to manga stats
+type StatsUpdate struct {
+	MangaID      string `json:"manga_id"`
+	CommentCount *int   `json:"comment_count,omitempty"`
+	LikeCount    *int   `json:"like_count,omitempty"`
+	ChatCount    *int   `json:"chat_count,omitempty"`
+	WeeklyScore  *int   `json:"weekly_score,omitempty"`
 }

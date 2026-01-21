@@ -1,105 +1,62 @@
-// Package models - Comment System for Chapter Discussions
-// Hệ thống bình luận cho manga chapters
-// Chức năng:
-//   - Comments on manga/chapters with spoiler support
-//   - Threaded replies via parent_id
-//   - Like/unlike comments
-//   - Edit and soft-delete support
 package models
 
 import (
 	"time"
 )
 
-// Comment represents a user comment on a manga or chapter
+// Comment represents a manga comment - EXACTLY matches schema.sql
 type Comment struct {
-	ID            string     `json:"id" db:"id"`
-	MangaID       string     `json:"manga_id" db:"manga_id"`
-	ChapterNumber *int       `json:"chapter_number,omitempty" db:"chapter_number"` // nil = manga-level comment
-	UserID        string     `json:"user_id" db:"user_id"`
-	Content       string     `json:"content" db:"content"`
-	IsSpoiler     bool       `json:"is_spoiler" db:"is_spoiler"`
-	ParentID      *string    `json:"parent_id,omitempty" db:"parent_id"` // For threaded replies
-	LikesCount    int        `json:"likes_count" db:"likes_count"`
-	IsEdited      bool       `json:"is_edited" db:"is_edited"`
-	IsDeleted     bool       `json:"is_deleted" db:"is_deleted"`
-	CreatedAt     time.Time  `json:"created_at" db:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at" db:"updated_at"`
-}
-
-// CommentLike tracks which users liked a comment
-type CommentLike struct {
 	ID        string    `json:"id" db:"id"`
-	CommentID string    `json:"comment_id" db:"comment_id"`
+	MangaID   string    `json:"manga_id" db:"manga_id"`
 	UserID    string    `json:"user_id" db:"user_id"`
+	Content   string    `json:"content" db:"content"`
+	LikeCount int       `json:"like_count" db:"like_count"`
 	CreatedAt time.Time `json:"created_at" db:"created_at"`
 }
 
-// CommentWithUser includes user info for display
-type CommentWithUser struct {
-	Comment
-	Username    string `json:"username"`
-	DisplayName string `json:"display_name"`
-	AvatarURL   string `json:"avatar_url,omitempty"`
-	LikedByMe   bool   `json:"liked_by_me"` // Whether current user liked this comment
-}
-
-// CommentWithReplies includes nested replies
-type CommentWithReplies struct {
-	CommentWithUser
-	Replies []CommentWithUser `json:"replies,omitempty"`
-}
-
-// ===== Request/Response Types for Comment API =====
-
-// CreateCommentRequest is the payload for creating a comment
+// CreateCommentRequest - includes manga_id as required by domain model
 type CreateCommentRequest struct {
-	Content       string `json:"content" validate:"required,min=1,max=2000"`
-	ChapterNumber *int   `json:"chapter_number,omitempty"`
-	IsSpoiler     bool   `json:"is_spoiler"`
-	ParentID      string `json:"parent_id,omitempty"` // For replies
+	MangaID string `json:"manga_id" validate:"required"` // Can also be in URL path
+	Content string `json:"content" validate:"required,min=1,max=5000"`
 }
 
-// UpdateCommentRequest is the payload for editing a comment
-type UpdateCommentRequest struct {
-	Content   string `json:"content" validate:"required,min=1,max=2000"`
-	IsSpoiler bool   `json:"is_spoiler"`
+// LikeCommentRequest - required for SPEC.md "Like comment" functionality
+type LikeCommentRequest struct {
+	CommentID string `json:"comment_id" validate:"required"`
 }
 
-// CommentListResponse is paginated list of comments
+// CommentUser - minimal user info for comment responses (SPEC.md compliant)
+type CommentUser struct {
+	ID       string `json:"id"`
+	Username string `json:"username"`
+}
+
+// CommentResponse represents a comment with user info for API responses
+type CommentResponse struct {
+	ID        string      `json:"id"`
+	MangaID   string      `json:"manga_id"`
+	User      CommentUser `json:"user"`
+	Content   string      `json:"content"`
+	LikeCount int         `json:"like_count"`
+	CreatedAt time.Time   `json:"created_at"`
+}
+
+// CommentListResponse is paginated list of comments - standard format
 type CommentListResponse struct {
-	Comments   []CommentWithReplies `json:"comments"`
-	TotalCount int                  `json:"total_count"`
-	Page       int                  `json:"page"`
-	PageSize   int                  `json:"page_size"`
-	HasMore    bool                 `json:"has_more"`
+	Data    []CommentResponse `json:"data"`
+	Total   int               `json:"total"`
+	Limit   int               `json:"limit"`
+	Offset  int               `json:"offset"`
+	HasMore bool              `json:"has_more"`
 }
 
-// Activity represents a user action for the activity feed
-type Activity struct {
-	ID            string    `json:"id" db:"id"`
-	UserID        string    `json:"user_id" db:"user_id"`
-	ActionType    string    `json:"action_type" db:"action_type"` // read, rate, comment, add_library, etc.
-	MangaID       *string   `json:"manga_id,omitempty" db:"manga_id"`
-	ChapterNumber *int      `json:"chapter_number,omitempty" db:"chapter_number"`
-	Details       string    `json:"details,omitempty" db:"details"` // JSON string for extra data
-	IsPublic      bool      `json:"is_public" db:"is_public"`
-	CreatedAt     time.Time `json:"created_at" db:"created_at"`
+// ActivityEvent - for emitting to TCP Stats Service (SPEC.md section 5.1)
+type CommentActivityEvent struct {
+	Type      string    `json:"type"` // "comment_created" or "comment_liked"
+	CommentID string    `json:"comment_id"`
+	MangaID   string    `json:"manga_id"`
+	UserID    string    `json:"user_id"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
-// ActivityWithDetails includes related info for display
-type ActivityWithDetails struct {
-	Activity
-	Username   string `json:"username"`
-	MangaTitle string `json:"manga_title,omitempty"`
-}
-
-// Activity action types
-const (
-	ActivityRead       = "read"        // User read a chapter
-	ActivityRate       = "rate"        // User rated a manga
-	ActivityComment    = "comment"     // User commented
-	ActivityAddLibrary = "add_library" // User added to library
-	ActivityComplete   = "complete"    // User completed a manga
-	ActivityFollow     = "follow"      // User followed another user
-)
+const MaxCommentLength = 5000

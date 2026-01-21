@@ -1,20 +1,3 @@
-// Package views - Manga Detail View
-// Bloomberg-style manga information card
-// Layout:
-//
-//	┌───────────────────────────────────────────────────────┐
-//	│  ONE PIECE                                    ⭐ 9.2  │
-//	│  Eiichiro Oda • Action/Adventure • Ongoing            │
-//	│                                                       │
-//	│  [ Cover ]   SYNOPSIS                                 │
-//	│  [  Art  ]   Monkey D. Luffy dreams of finding the    │
-//	│  [ ASCII ]   One Piece treasure...                    │
-//	│                                                       │
-//	│  YOUR PROGRESS:                                       │
-//	│  [████████████░░] 89% (Ch 1093)                       │
-//	│                                                       │
-//	│  [r] Read Next   [c] Comments   [R] Rate              │
-//	└───────────────────────────────────────────────────────┘
 package views
 
 import (
@@ -22,133 +5,88 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-
 	"mangahub/internal/tui/api"
-	"mangahub/internal/tui/network"
 	"mangahub/internal/tui/styles"
 	"mangahub/pkg/models"
 )
 
-// =====================================
-// DETAIL MODEL
-// =====================================
+// DetailTab represents tabs in detail view
+type DetailTab int
 
-// DetailModel holds the manga detail view state
+const (
+	TabInfo DetailTab = iota
+	TabComments
+)
+
+// DetailModel displays manga details and comments
 type DetailModel struct {
-	// Window dimensions
-	width  int
-	height int
-
-	// Theme
-	theme *styles.Theme
-
-	// Data
-	mangaID string
-	manga   *models.Manga
-	ratings *models.MangaRatingsSummary
-	library *api.LibraryEntry
-
-	// Loading
-	loading        bool
-	loadingRatings bool
-
-	// Components
-	spinner spinner.Model
-
-	// UI state
-	selectedAction int
-	actions        []string
-
-	// Error
-	lastError error
-
-	// API client
-	client *api.Client
+	apiClient     *api.Client
+	
+	// Current manga
+	mangaID       string
+	manga         *models.Manga
+	
+	// Comments
+	comments      []models.Comment
+	commentsTotal int
+	commentsPage  int
+	
+	// State
+	loading       bool
+	err           error
+	selectedTab   DetailTab
+	
+	// Comment input
+	commentInput  textinput.Model
+	inputFocused  bool
+	
+	// Viewport for scrolling
+	viewport      viewport.Model
+	
+	// Selection
+	commentCursor int
+	
+	// Window size
+	width         int
+	height        int
 }
 
-// =====================================
-// MESSAGES
-// =====================================
-
-// DetailDataLoadedMsg signals manga detail loaded
-type DetailDataLoadedMsg struct {
-	Manga   *models.Manga
-	Ratings *models.MangaRatingsSummary
-	Library *api.LibraryEntry
-}
-
-// DetailErrorMsg signals an error
-type DetailErrorMsg struct {
-	Error error
-}
-
-// =====================================
-// CONSTRUCTOR
-// =====================================
-
-// NewDetail creates a new detail model for a manga
-func NewDetail(mangaID string) DetailModel {
-	s := spinner.New()
-	s.Spinner = spinner.Dot
-	s.Style = styles.DefaultTheme.Spinner
-
+// NewDetailModel creates a new detail model
+func NewDetailModel(apiClient *api.Client) DetailModel {
+	commentInput := textinput.New()
+	commentInput.Placeholder = "Write a comment..."
+	commentInput.CharLimit = 500
+	commentInput.Width = 50
+	
 	return DetailModel{
-		theme:   styles.DefaultTheme,
-		spinner: s,
-		client:  api.GetClient(),
-		mangaID: mangaID,
-		loading: true,
-		actions: []string{"Read Next", "💬 Chat", "Comments", "Rate", "Add to Library"},
+		apiClient:    apiClient,
+		selectedTab:  TabInfo,
+		commentsPage: 1,
+		commentInput: commentInput,
 	}
 }
 
-// =====================================
-// BUBBLE TEA INTERFACE
-// =====================================
+// SetManga sets the manga to display
+func (m *DetailModel) SetManga(mangaID string) tea.Cmd {
+	m.mangaID = mangaID
+	m.loading = true
+	m.manga = nil
+	m.comments = nil
+	m.selectedTab = TabInfo
+	return tea.Batch(m.loadManga(), m.loadComments())
+}
 
-// Init initializes the detail view
+// Init initializes the model
 func (m DetailModel) Init() tea.Cmd {
-	return tea.Batch(
-		m.spinner.Tick,
-		m.loadMangaDetail,
-	)
-}
-
-// loadMangaDetail fetches manga details and ratings
-func (m DetailModel) loadMangaDetail() tea.Msg {
-	ctx := context.Background()
-
-	// Load manga
-	manga, err := m.client.GetManga(ctx, m.mangaID)
-	if err != nil {
-		return DetailErrorMsg{Error: err}
+	if m.mangaID != "" {
+		return tea.Batch(m.loadManga(), m.loadComments())
 	}
-
-	// Load ratings
-	ratings, _ := m.client.GetRatings(ctx, m.mangaID)
-
-	// Check if in library
-	var library *api.LibraryEntry
-	if m.client.IsAuthenticated() {
-		entries, err := m.client.GetLibrary(ctx)
-		if err == nil {
-			for _, entry := range entries {
-				if entry.MangaID == m.mangaID {
-					library = &entry
-					break
-				}
-			}
-		}
-	}
-
-	return DetailDataLoadedMsg{
-		Manga:   manga,
-		Ratings: ratings,
-		Library: library,
-	}
+	return nil
 }
 
 // Update handles messages
@@ -159,368 +97,326 @@ func (m DetailModel) Update(msg tea.Msg) (DetailModel, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.viewport.Width = msg.Width - 4
+		m.viewport.Height = msg.Height - 10
+		return m, nil
 
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "left", "h":
-			m.selectedAction--
-			if m.selectedAction < 0 {
-				m.selectedAction = len(m.actions) - 1
-			}
-		case "right", "l":
-			m.selectedAction = (m.selectedAction + 1) % len(m.actions)
-
-		case "r":
-			// Read next
-			// TODO: Implement read next action
-		case "c":
-			// Join Chat for this manga
-			if m.manga != nil {
-				mangaName := m.manga.Title
-				roomID := "manga_" + m.mangaID
-				return m, func() tea.Msg {
-					return network.JoinRoomMsg{
-						RoomID:    roomID,
-						RoomName:  mangaName + " Discussion",
-						MangaID:   m.mangaID,
-						MangaName: mangaName,
-					}
+		if m.inputFocused {
+			switch {
+			case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
+				m.inputFocused = false
+				m.commentInput.Blur()
+				return m, nil
+				
+			case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
+				if m.commentInput.Value() != "" {
+					m.loading = true
+					return m, m.submitComment()
 				}
+				return m, nil
 			}
-		case "C":
-			// Comments (capital C)
-			// TODO: Navigate to comments view
-		case "R":
-			// Rate
-			// TODO: Open rating modal
-		case "a":
-			// Add to library
-			if m.manga != nil && m.library == nil {
-				return m, m.addToLibrary
+			
+			var cmd tea.Cmd
+			m.commentInput, cmd = m.commentInput.Update(msg)
+			cmds = append(cmds, cmd)
+		} else {
+			switch {
+			case key.Matches(msg, key.NewBinding(key.WithKeys("tab"))):
+				m.selectedTab = (m.selectedTab + 1) % 2
+				m.commentCursor = 0
+				return m, nil
+				
+			case key.Matches(msg, key.NewBinding(key.WithKeys("j", "down"))):
+				if m.selectedTab == TabComments {
+					m.commentCursor++
+					if m.commentCursor >= len(m.comments) {
+						m.commentCursor = len(m.comments) - 1
+					}
+				} else {
+					m.viewport.LineDown(1)
+				}
+				return m, nil
+				
+			case key.Matches(msg, key.NewBinding(key.WithKeys("k", "up"))):
+				if m.selectedTab == TabComments {
+					m.commentCursor--
+					if m.commentCursor < 0 {
+						m.commentCursor = 0
+					}
+				} else {
+					m.viewport.LineUp(1)
+				}
+				return m, nil
+				
+			case key.Matches(msg, key.NewBinding(key.WithKeys("c"))):
+				if m.selectedTab == TabComments {
+					m.inputFocused = true
+					m.commentInput.Focus()
+					return m, textinput.Blink
+				}
+				return m, nil
+				
+			case key.Matches(msg, key.NewBinding(key.WithKeys("r"))):
+				m.loading = true
+				return m, tea.Batch(m.loadManga(), m.loadComments())
+				
+			case key.Matches(msg, key.NewBinding(key.WithKeys("n", "pgdown"))):
+				if m.selectedTab == TabComments && m.hasMoreComments() {
+					m.commentsPage++
+					m.loading = true
+					return m, m.loadComments()
+				}
+				return m, nil
 			}
 		}
 
-	case DetailDataLoadedMsg:
-		m.manga = msg.Manga
-		m.ratings = msg.Ratings
-		m.library = msg.Library
+	case MangaDetailLoadedMsg:
 		m.loading = false
-		// Update actions based on library status
-		if m.library != nil {
-			m.actions = []string{"Read Next", "💬 Chat", "Update Progress", "Comments", "Rate"}
-		} else {
-			m.actions = []string{"Add to Library", "💬 Chat", "Comments", "Rate"}
-		}
+		m.manga = msg.Manga
+		return m, nil
+
+	case CommentsLoadedMsg:
+		m.loading = false
+		m.comments = msg.Comments
+		m.commentsTotal = msg.Total
+		return m, nil
+
+	case CommentSubmittedMsg:
+		m.loading = false
+		m.commentInput.SetValue("")
+		m.inputFocused = false
+		m.commentInput.Blur()
+		// Reload comments
+		return m, m.loadComments()
 
 	case DetailErrorMsg:
-		m.lastError = msg.Error
 		m.loading = false
-
-	case spinner.TickMsg:
-		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(msg)
-		cmds = append(cmds, cmd)
+		m.err = msg.Err
+		return m, nil
 	}
 
 	return m, tea.Batch(cmds...)
 }
 
-// addToLibrary adds the manga to user's library
-func (m DetailModel) addToLibrary() tea.Msg {
-	ctx := context.Background()
-	err := m.client.AddToLibrary(ctx, m.mangaID)
-	if err != nil {
-		return DetailErrorMsg{Error: err}
-	}
-	// Reload to update library status
-	return m.loadMangaDetail()
-}
-
 // View renders the detail view
 func (m DetailModel) View() string {
-	if m.loading {
-		return m.theme.Container.Width(m.width - 4).Render(
-			m.theme.Title.Render("Loading manga details...") + "\n\n" +
-				m.spinner.View())
-	}
+	var b strings.Builder
 
 	if m.manga == nil {
-		return m.theme.Container.Width(m.width - 4).Render(
-			m.theme.ErrorText.Render("Failed to load manga"))
+		if m.loading {
+			b.WriteString(styles.SpinnerStyle.Render("⟳ "))
+			b.WriteString(styles.InfoStyle.Render("Loading..."))
+		} else if m.err != nil {
+			b.WriteString(styles.ErrorStyle.Render("Error: " + m.err.Error()))
+		} else {
+			b.WriteString(styles.InfoStyle.Render("No manga selected"))
+		}
+		return b.String()
 	}
 
-	// Build the detail card
-	card := m.renderCard()
-
-	return m.theme.CardFocused.Width(m.width - 4).Render(card)
-}
-
-// =====================================
-// CARD RENDERER
-// =====================================
-
-func (m DetailModel) renderCard() string {
-	var sections []string
-
-	// ===== HEADER =====
-	header := m.renderHeader()
-	sections = append(sections, header)
-
-	// ===== METADATA =====
-	metadata := m.renderMetadata()
-	sections = append(sections, metadata)
-
-	// ===== BODY (ASCII Art + Synopsis) =====
-	body := m.renderBody()
-	sections = append(sections, body)
-
-	// ===== PROGRESS (if in library) =====
-	if m.library != nil {
-		progress := m.renderProgress()
-		sections = append(sections, progress)
-	}
-
-	// ===== RATING SUMMARY =====
-	if m.ratings != nil {
-		ratingSummary := m.renderRatingSummary()
-		sections = append(sections, ratingSummary)
-	}
-
-	// ===== ACTIONS =====
-	actions := m.renderActions()
-	sections = append(sections, actions)
-
-	return lipgloss.JoinVertical(lipgloss.Left, sections...)
-}
-
-// renderHeader renders the title and rating
-func (m DetailModel) renderHeader() string {
 	// Title
-	title := m.theme.Title.Bold(true).Render(strings.ToUpper(m.manga.Title))
+	b.WriteString(styles.TitleStyle.Render("📖 " + m.manga.Title))
+	b.WriteString("\n\n")
 
-	// Rating badge
-	var ratingBadge string
-	if m.ratings != nil && m.ratings.Aggregate.TotalRatings > 0 {
-		ratingBadge = styles.RenderRatingWithNumber(m.ratings.Aggregate.AverageRating)
+	// Tabs
+	infoTab := styles.TabStyle.Render("📋 Info")
+	commentsTab := styles.TabStyle.Render(fmt.Sprintf("💬 Comments (%d)", m.commentsTotal))
+	
+	if m.selectedTab == TabInfo {
+		infoTab = styles.TabActiveStyle.Render("📋 Info")
 	} else {
-		ratingBadge = m.theme.DimText.Render("No ratings yet")
+		commentsTab = styles.TabActiveStyle.Render(fmt.Sprintf("💬 Comments (%d)", m.commentsTotal))
+	}
+	
+	b.WriteString(infoTab + " " + commentsTab)
+	b.WriteString("\n")
+	b.WriteString(styles.RenderDivider(50))
+	b.WriteString("\n\n")
+
+	// Content based on tab
+	if m.selectedTab == TabInfo {
+		b.WriteString(m.renderInfo())
+	} else {
+		b.WriteString(m.renderComments())
 	}
 
-	// Combine with spacing
-	titleWidth := lipgloss.Width(title)
-	ratingWidth := lipgloss.Width(ratingBadge)
-	availableWidth := m.width - 12
-	padding := availableWidth - titleWidth - ratingWidth
-	if padding < 2 {
-		padding = 2
+	// Help
+	b.WriteString("\n\n")
+	if m.inputFocused {
+		b.WriteString(styles.HelpStyle.Render("Enter submit • Esc cancel"))
+	} else if m.selectedTab == TabComments {
+		b.WriteString(styles.HelpStyle.Render("c comment • ↑/↓ navigate • Tab switch • n more • r refresh"))
+	} else {
+		b.WriteString(styles.HelpStyle.Render("↑/↓ scroll • Tab switch • r refresh"))
 	}
 
-	headerLine := title + strings.Repeat(" ", padding) + ratingBadge
-	return headerLine + "\n"
+	return b.String()
 }
 
-// renderMetadata renders author, genres, status
-func (m DetailModel) renderMetadata() string {
-	parts := []string{}
-
-	if m.manga.Author != "" {
-		parts = append(parts, m.manga.Author)
+// renderInfo renders manga information
+func (m DetailModel) renderInfo() string {
+	if m.manga == nil {
+		return ""
 	}
 
-	// Genres (if available)
-	if len(m.manga.Genres) > 0 {
-		genres := strings.Join(m.manga.Genres[:min(3, len(m.manga.Genres))], "/")
-		parts = append(parts, genres)
-	}
+	var b strings.Builder
 
 	// Status
-	status := "Ongoing"
-	if m.manga.Status != "" {
-		status = m.manga.Status
-	}
-	parts = append(parts, status)
+	b.WriteString(styles.RenderKeyValue("Status", m.renderStatus(m.manga.Status)))
+	b.WriteString("\n\n")
 
-	metadata := m.theme.Subtitle.Render(strings.Join(parts, " • "))
-	return metadata + "\n"
-}
-
-// renderBody renders ASCII art placeholder and synopsis
-func (m DetailModel) renderBody() string {
-	// ASCII art placeholder (left side)
-	asciiArt := m.renderASCIIArt()
-
-	// Synopsis (right side)
-	synopsis := m.renderSynopsis()
-
-	// Calculate widths
-	artWidth := 22
-	synopsisWidth := m.width - artWidth - 12
-
-	// Style containers
-	artBox := lipgloss.NewStyle().
-		Width(artWidth).
-		Align(lipgloss.Center).
-		Foreground(styles.ColorDim).
-		Render(asciiArt)
-
-	synopsisBox := lipgloss.NewStyle().
-		Width(synopsisWidth).
-		Render(synopsis)
-
-	return lipgloss.JoinHorizontal(lipgloss.Top, artBox, "  ", synopsisBox) + "\n"
-}
-
-// renderASCIIArt creates a placeholder manga cover in ASCII
-func (m DetailModel) renderASCIIArt() string {
-	// Simple ASCII book/manga placeholder
-	return `
-┌──────────────────┐
-│    ╔══════╗      │
-│    ║ MANGA║      │
-│    ║ COVER║      │
-│    ║      ║      │
-│    ╚══════╝      │
-│                  │
-│   📖 Vol. 1     │
-│                  │
-└──────────────────┘`
-}
-
-// renderSynopsis renders the manga description
-func (m DetailModel) renderSynopsis() string {
-	header := m.theme.PanelHeader.Render("SYNOPSIS")
-
-	desc := m.manga.Description
-	if desc == "" {
-		desc = "No description available."
-	}
-
-	// Word wrap
-	maxWidth := m.width - 36
-	if maxWidth < 30 {
-		maxWidth = 30
-	}
-	wrapped := wordWrap(desc, maxWidth)
-
-	// Limit lines
-	lines := strings.Split(wrapped, "\n")
-	if len(lines) > 5 {
-		lines = lines[:5]
-		lines = append(lines, m.theme.DimText.Render("..."))
-	}
-
-	return header + "\n" + strings.Join(lines, "\n")
-}
-
-// renderProgress renders the reading progress section
-func (m DetailModel) renderProgress() string {
-	header := m.theme.PanelHeader.Render("YOUR PROGRESS")
-
-	current := m.library.CurrentChapter
-	total := m.library.TotalChapters
-
-	var progressPct float64
-	var progressText string
-	if total > 0 {
-		progressPct = float64(current) / float64(total)
-		progressText = fmt.Sprintf("Chapter %d of %d", current, total)
+	// Description
+	b.WriteString(styles.MetaKeyStyle.Render("Description:"))
+	b.WriteString("\n")
+	if m.manga.Description != "" {
+		b.WriteString(styles.CardContentStyle.Render(m.manga.Description))
 	} else {
-		progressPct = 0
-		progressText = fmt.Sprintf("Chapter %d", current)
+		b.WriteString(styles.HelpStyle.Render("No description available"))
+	}
+	b.WriteString("\n\n")
+
+	// Cover URL
+	if m.manga.CoverURL != "" {
+		b.WriteString(styles.RenderKeyValue("Cover", m.manga.CoverURL))
+		b.WriteString("\n")
 	}
 
-	progressBar := styles.RenderProgressBar(progressPct, 20)
+	// Created date
+	b.WriteString(styles.RenderKeyValue("Added", m.manga.CreatedAt.Format("Jan 2, 2006")))
 
-	return header + "\n" + progressBar + "  " + m.theme.Description.Render(progressText) + "\n"
+	return b.String()
 }
 
-// renderRatingSummary renders the rating statistics
-func (m DetailModel) renderRatingSummary() string {
-	header := m.theme.PanelHeader.Render("COMMUNITY RATINGS")
+// renderComments renders comments list
+func (m DetailModel) renderComments() string {
+	var b strings.Builder
 
-	agg := m.ratings.Aggregate
-	avgRating := styles.RenderRating(agg.AverageRating, true)
-	countText := m.theme.DimText.Render(fmt.Sprintf("(%d ratings)", agg.TotalRatings))
+	// Comment input
+	if m.inputFocused {
+		b.WriteString(styles.InputFocusedStyle.Render("New Comment:"))
+		b.WriteString("\n")
+		b.WriteString(m.commentInput.View())
+		b.WriteString("\n\n")
+	}
 
-	return header + "\n" + avgRating + " " + countText + "\n"
-}
+	if len(m.comments) == 0 {
+		b.WriteString(styles.HelpStyle.Render("No comments yet. Press 'c' to add one!"))
+		return b.String()
+	}
 
-// renderActions renders the action buttons
-func (m DetailModel) renderActions() string {
-	header := m.theme.PanelHeader.Render("ACTIONS")
+	// Comments list
+	for i, comment := range m.comments {
+		selected := i == m.commentCursor
 
-	var buttons []string
-	for i, action := range m.actions {
-		var style lipgloss.Style
-		if i == m.selectedAction {
-			style = m.theme.ButtonActive
-		} else {
-			style = m.theme.ButtonInactive
+		// Comment card
+		var commentContent strings.Builder
+		
+		// Header: username and date
+		username := "Anonymous"
+		if comment.UserID != "" {
+			username = comment.UserID[:8] + "..."
 		}
-		buttons = append(buttons, style.Render(" "+action+" "))
+		commentContent.WriteString(styles.CardTitleStyle.Render(username))
+		commentContent.WriteString("  ")
+		commentContent.WriteString(styles.HelpStyle.Render(comment.CreatedAt.Format("Jan 2, 2006 15:04")))
+		commentContent.WriteString("\n")
+		
+		// Content
+		commentContent.WriteString(styles.CardContentStyle.Render(comment.Content))
+
+		style := styles.CardStyle
+		if selected {
+			style = style.BorderForeground(lipgloss.Color(styles.Pink))
+		}
+		
+		b.WriteString(style.Render(commentContent.String()))
+		b.WriteString("\n")
 	}
 
-	buttonRow := lipgloss.JoinHorizontal(lipgloss.Center, buttons...)
-	return header + "\n" + buttonRow
+	// More indicator
+	if m.hasMoreComments() {
+		b.WriteString(styles.HelpStyle.Render(fmt.Sprintf("Showing %d of %d comments", len(m.comments), m.commentsTotal)))
+	}
+
+	return b.String()
 }
 
-// =====================================
-// HELPERS
-// =====================================
-
-// wordWrap wraps text to a maximum width
-func wordWrap(text string, maxWidth int) string {
-	if maxWidth <= 0 {
-		return text
+// renderStatus renders status as styled text
+func (m DetailModel) renderStatus(status string) string {
+	switch status {
+	case "ongoing":
+		return styles.SuccessStyle.Render("Ongoing")
+	case "completed":
+		return styles.InfoStyle.Render("Completed")
+	case "hiatus":
+		return styles.WarningStyle.Render("Hiatus")
+	default:
+		return status
 	}
+}
 
-	var lines []string
-	words := strings.Fields(text)
-	currentLine := ""
+// hasMoreComments returns true if there are more comments to load
+func (m DetailModel) hasMoreComments() bool {
+	return len(m.comments) < m.commentsTotal
+}
 
-	for _, word := range words {
-		if len(currentLine)+len(word)+1 <= maxWidth {
-			if currentLine != "" {
-				currentLine += " "
-			}
-			currentLine += word
-		} else {
-			if currentLine != "" {
-				lines = append(lines, currentLine)
-			}
-			currentLine = word
+// loadManga loads manga details
+func (m DetailModel) loadManga() tea.Cmd {
+	return func() tea.Msg {
+		ctx := context.Background()
+		manga, err := m.apiClient.GetManga(ctx, m.mangaID)
+		if err != nil {
+			return DetailErrorMsg{Err: err}
+		}
+		return MangaDetailLoadedMsg{Manga: manga}
+	}
+}
+
+// loadComments loads comments for the manga
+func (m DetailModel) loadComments() tea.Cmd {
+	return func() tea.Msg {
+		ctx := context.Background()
+		resp, err := m.apiClient.ListComments(ctx, m.mangaID, m.commentsPage, 20)
+		if err != nil {
+			return DetailErrorMsg{Err: err}
+		}
+		return CommentsLoadedMsg{
+			Comments: resp.Data,
+			Total:    resp.Meta.Total,
 		}
 	}
+}
 
-	if currentLine != "" {
-		lines = append(lines, currentLine)
+// submitComment submits a new comment
+func (m DetailModel) submitComment() tea.Cmd {
+	return func() tea.Msg {
+		ctx := context.Background()
+		_, err := m.apiClient.CreateComment(ctx, m.mangaID, m.commentInput.Value(), nil)
+		if err != nil {
+			return DetailErrorMsg{Err: err}
+		}
+		return CommentSubmittedMsg{}
 	}
-
-	return strings.Join(lines, "\n")
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
+// Messages
+
+// MangaDetailLoadedMsg is sent when manga details are loaded
+type MangaDetailLoadedMsg struct {
+	Manga *models.Manga
 }
 
-// SetMangaID sets the manga to display
-func (m *DetailModel) SetMangaID(id string) {
-	m.mangaID = id
-	m.loading = true
-	m.manga = nil
-	m.ratings = nil
-	m.library = nil
+// CommentsLoadedMsg is sent when comments are loaded
+type CommentsLoadedMsg struct {
+	Comments []models.Comment
+	Total    int
 }
 
-// SetWidth sets the view width
-func (m *DetailModel) SetWidth(w int) {
-	m.width = w
-}
+// CommentSubmittedMsg is sent when comment is submitted
+type CommentSubmittedMsg struct{}
 
-// SetHeight sets the view height
-func (m *DetailModel) SetHeight(h int) {
-	m.height = h
+// DetailErrorMsg is sent on detail errors
+type DetailErrorMsg struct {
+	Err error
 }

@@ -1,10 +1,4 @@
 // Package cache - Redis Cache Interface and Implementation
-// Caching layer cho MangaHub với Redis
-// Chức năng:
-//   - Cache external API responses
-//   - Session storage
-//   - Rate limiting counters
-//   - Real-time data caching
 package cache
 
 import (

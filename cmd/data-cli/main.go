@@ -1,16 +1,3 @@
-// Package main - MangaHub Data Pipeline TUI
-// Interactive TUI for fetching external API data and importing to SQLite
-//
-// Features:
-//   - Search MangaDex and Jikan APIs
-//   - Preview data before import
-//   - Import selected manga to local database
-//   - Redis caching to save API calls
-//   - Full pipeline testing
-//
-// Usage:
-//
-//	go run ./cmd/data-cli
 package main
 
 import (

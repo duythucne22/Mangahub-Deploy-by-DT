@@ -1,6 +1,3 @@
-// Package main - MangaHub Terminal User Interface
-// Bloomberg Terminal-inspired manga reading tracker
-// Entry point for the TUI application
 package main
 
 import (
@@ -8,37 +5,31 @@ import (
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
-
 	"mangahub/internal/tui"
-	"mangahub/internal/tui/api"
-	"mangahub/pkg/config"
+	"mangahub/internal/tui/config"
 )
 
 func main() {
 	// Load configuration
-	cfg, err := config.Load("configs/development.yaml")
+	cfg, err := config.Load("")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
-		os.Exit(1)
+		fmt.Printf("Error loading config: %v\n", err)
+		fmt.Println("Using default configuration...")
+		cfg = config.Default()
 	}
 
-	// Initialize API client
-	baseURL := fmt.Sprintf("http://%s:%d", cfg.Server.Host, cfg.Server.Port)
-	api.InitClient(baseURL)
+	// Create TUI application
+	app := tui.New(cfg)
 
-	// Create the TUI application
-	app := tui.NewApp()
-
-	// Configure Bubble Tea program
+	// Run the Bubble Tea program
 	p := tea.NewProgram(
 		app,
-		tea.WithAltScreen(),       // Use alternate screen buffer
-		tea.WithMouseCellMotion(), // Enable mouse support
+		tea.WithAltScreen(),
+		tea.WithMouseCellMotion(),
 	)
 
-	// Run the program
 	if _, err := p.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error running TUI: %v\n", err)
+		fmt.Printf("Error running TUI: %v\n", err)
 		os.Exit(1)
 	}
 }

@@ -1,52 +1,73 @@
 package models
 
 import (
+	"errors"
 	"time"
+)
+
+// UserRole represents valid user roles 
+type UserRole string
+
+const (
+	UserRoleUser      UserRole = "user"
+	UserRoleModerator UserRole = "moderator"
+	UserRoleAdmin     UserRole = "admin"
 )
 
 // User represents a system user
 type User struct {
 	ID           string    `json:"id" db:"id"`
-	Username     string    `json:"username" db:"username" validate:"required,min=3,max=50"`
-	Email        string    `json:"email" db:"email" validate:"required,email"`
+	Username     string    `json:"username" db:"username"`
 	PasswordHash string    `json:"-" db:"password_hash"`
-	DisplayName  string    `json:"display_name" db:"display_name"`
-	Bio          string    `json:"bio" db:"bio"`
-	AvatarURL    string    `json:"avatar_url" db:"avatar_url"`
-	Role         string    `json:"role" db:"role"` // user, admin
-	IsActive     bool      `json:"is_active" db:"is_active"`
+	Role         UserRole  `json:"role" db:"role" validate:"required,oneof=user moderator admin"`
 	CreatedAt    time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at" db:"updated_at"`
-	LastLoginAt  *time.Time `json:"last_login_at,omitempty" db:"last_login_at"`
 }
 
-// UserProfile is the public-facing user profile
-type UserProfile struct {
-	ID          string     `json:"id"`
-	Username    string     `json:"username"`
-	DisplayName string     `json:"display_name"`
-	Bio         string     `json:"bio"`
-	AvatarURL   string     `json:"avatar_url"`
-	CreatedAt   time.Time  `json:"created_at"`
-	LastLoginAt *time.Time `json:"last_login_at,omitempty"`
-}
-
-// RegisterRequest represents a user registration request
+// RegisterRequest 
 type RegisterRequest struct {
-	Username string `json:"username" validate:"required,min=3,max=50"`
-	Email    string `json:"email" validate:"required,email"`
-	Password string `json:"password" validate:"required,min=8,max=100"`
+	Username string `json:"username" validate:"required,min=3,max=50,alphanum"`
+	Password string `json:"password" validate:"required,min=12,max=128,containsany=@$!%*#?&"`
 }
 
-// LoginRequest represents a login request
+// LoginRequest 
 type LoginRequest struct {
 	Username string `json:"username" validate:"required"`
 	Password string `json:"password" validate:"required"`
 }
 
-// LoginResponse represents a successful login response
+// UserProfile - public-facing profile, NO sensitive data
+type UserProfile struct {
+	ID        string    `json:"id"`
+	Username  string    `json:"username"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// LoginResponse
 type LoginResponse struct {
-	Token     string      `json:"token"`
-	ExpiresAt time.Time   `json:"expires_at"`
-	User      UserProfile `json:"user"`
+	Token    string      `json:"token"`
+	User     UserProfile `json:"user"`
+	ExpiresIn int         `json:"expires_in"` // seconds (client-friendly)
+}
+
+// ValidateRegisterRequest adds additional validation beyond struct tags
+func ValidateRegisterRequest(req *RegisterRequest) error {
+	if len(req.Password) < 12 {
+		return errors.New("password must be at least 12 characters with special characters")
+	}
+	if len(req.Username) < 3 {
+		return errors.New("username must be at least 3 characters")
+	}
+	return nil
+}
+
+// HasRole checks if user has required role (for middleware)
+func (u *User) HasRole(requiredRole UserRole) bool {
+	switch requiredRole {
+	case UserRoleAdmin:
+		return u.Role == UserRoleAdmin
+	case UserRoleModerator:
+		return u.Role == UserRoleModerator || u.Role == UserRoleAdmin
+	default: // UserRoleUser
+		return true 
+	}
 }

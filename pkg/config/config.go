@@ -1,11 +1,3 @@
-// Package config - Application Configuration Management
-// Xử lý load và parse configuration từ YAML files
-// Chức năng:
-//   - Load config từ development.yaml/production.yaml
-//   - Server, Database, JWT, TCP, UDP, gRPC, WebSocket configs
-//   - Logging configuration
-//   - Environment-specific settings
-//   - Sử dụng Viper cho flexible config loading
 package config
 
 import (
@@ -41,10 +33,18 @@ type ServerConfig struct {
 }
 
 type DatabaseConfig struct {
-	Path            string        `mapstructure:"path"`
+	// PostgreSQL Configuration
+	Host            string        `mapstructure:"host"`
+	Port            int           `mapstructure:"port"`
+	User            string        `mapstructure:"user"`
+	Password        string        `mapstructure:"password"`
+	Database        string        `mapstructure:"database"`
+	SSLMode         string        `mapstructure:"ssl_mode"`
 	MaxOpenConns    int           `mapstructure:"max_open_conns"`
 	MaxIdleConns    int           `mapstructure:"max_idle_conns"`
 	ConnMaxLifetime time.Duration `mapstructure:"conn_max_lifetime"`
+	ConnMaxIdleTime time.Duration `mapstructure:"conn_max_idle_time"`
+	Timeout         time.Duration `mapstructure:"timeout"`
 }
 
 type JWTConfig struct {
@@ -159,11 +159,18 @@ func setDefaults() {
 	viper.SetDefault("server.idle_timeout", "60s")
 	viper.SetDefault("server.mode", "debug")
 
-	// Database defaults
-	viper.SetDefault("database.path", "./data/mangahub.db")
+	// Database defaults (PostgreSQL)
+	viper.SetDefault("database.host", "localhost")
+	viper.SetDefault("database.port", 5432)
+	viper.SetDefault("database.user", "postgres")
+	viper.SetDefault("database.password", "")
+	viper.SetDefault("database.database", "mangahub_dev")
+	viper.SetDefault("database.ssl_mode", "disable")
 	viper.SetDefault("database.max_open_conns", 25)
 	viper.SetDefault("database.max_idle_conns", 5)
 	viper.SetDefault("database.conn_max_lifetime", "5m")
+	viper.SetDefault("database.conn_max_idle_time", "1m")
+	viper.SetDefault("database.timeout", "5s")
 
 	// JWT defaults
 	viper.SetDefault("jwt.secret", "your-secret-key-change-in-production")

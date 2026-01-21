@@ -1,534 +1,746 @@
-// Package views - Chat View Component
-// Real-time chat interface with message history and input
-// Integrates with WebSocket for live messaging
 package views
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"net"
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/viewport"
+	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"github.com/gorilla/websocket"
+	"mangahub/internal/tui/api"
+	"mangahub/internal/tui/styles"
 )
 
-// =====================================
-// CHAT MESSAGE MODEL
-// =====================================
-
-// ChatMessage represents a single chat message for display
+// ChatMessage represents a chat message from the server
+// Matches the server's hub.go Message struct exactly
 type ChatMessage struct {
-	ID        string
-	RoomID    string
-	UserID    string
-	Username  string
-	Content   string
-	Type      string // text, join, leave, system
-	Timestamp time.Time
-	IsOwn     bool // true if sent by current user
+	Type      string    `json:"type"`      // "message", "join", "leave", "history", "error"
+	UserID    string    `json:"user_id"`
+	Username  string    `json:"username"`
+	MangaID   string    `json:"manga_id"`
+	Content   string    `json:"content"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
-// =====================================
-// STYLES
-// =====================================
+// ChatRoom represents a manga chat room
+type ChatRoom struct {
+	ID    string
+	Title string
+}
 
-var (
-	// Header styles
-	chatHeaderStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("#00D4FF")).
-			Background(lipgloss.Color("#1a1a2e")).
-			Padding(0, 1).
-			Width(100)
-
-	connectionOnlineStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#00FF88")).
-				Bold(true)
-
-	connectionOfflineStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#FF4444")).
-				Bold(true)
-
-	connectionReconnectStyle = lipgloss.NewStyle().
-					Foreground(lipgloss.Color("#FFAA00")).
-					Bold(true)
-
-	// Message styles
-	usernameStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("#00D4FF"))
-
-	ownUsernameStyle = lipgloss.NewStyle().
-				Bold(true).
-				Foreground(lipgloss.Color("#00FF88"))
-
-	timestampStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#666666")).
-			Italic(true)
-
-	messageContentStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#FFFFFF"))
-
-	systemMessageStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#888888")).
-				Italic(true).
-				Align(lipgloss.Center)
-
-	joinMessageStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#00FF88")).
-				Italic(true)
-
-	leaveMessageStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#FF8800")).
-				Italic(true)
-
-	// Input area styles
-	inputBorderStyle = lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(lipgloss.Color("#00D4FF")).
-				Padding(0, 1)
-
-	inputBorderDisabledStyle = lipgloss.NewStyle().
-					Border(lipgloss.RoundedBorder()).
-					BorderForeground(lipgloss.Color("#FF4444")).
-					Padding(0, 1)
-
-	inputHintStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#666666")).
-			Italic(true)
-
-	// Room info
-	roomInfoStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#AAAAAA"))
-
-	userCountStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#00D4FF")).
-			Bold(true)
-)
-
-// =====================================
-// CHAT MODEL
-// =====================================
-
-// ConnectionStatus represents WebSocket connection state
-type ConnectionStatus int
-
-const (
-	StatusDisconnected ConnectionStatus = iota
-	StatusConnecting
-	StatusConnected
-	StatusReconnecting
-)
-
-// ChatModel is the Bubble Tea model for chat view
+// ChatModel handles real-time chat with WebSocket
 type ChatModel struct {
-	messages  []ChatMessage
-	viewport  viewport.Model
-	textarea  textarea.Model
-	roomID    string
-	roomName  string
-	mangaID   string
-	mangaName string
-	userID    string
-	username  string
-	userCount int
-	status    ConnectionStatus
-	width     int
-	height    int
-	focused   bool
-	ready     bool
+	apiClient *api.Client
+	wsURL     string
+	token     string
+
+	// Connection state
+	conn       *websocket.Conn
+	connected  bool
+	connecting bool
+	// connGen increments every time we (re)connect; used to ignore stale reads.
+	connGen int64
+
+	// Chat state
+	messages         []ChatMessage
+	currentRoomID    string
+	currentRoomTitle string
+	rooms            []ChatRoom
+	roomsLoaded      bool
+
+	// UI state
+	messageInput  textinput.Model
+	inputFocused  bool
+	roomCursor    int
+	scrollOffset  int
+	showRoomList  bool
+
+	// Error handling
+	lastError error
+
+	// Window dimensions
+	width  int
+	height int
 }
 
 // NewChatModel creates a new chat model
-func NewChatModel() ChatModel {
-	ta := textarea.New()
-	ta.Placeholder = "Type a message..."
-	ta.Focus()
-	ta.Prompt = "│ "
-	ta.CharLimit = 500
-	ta.SetWidth(80)
-	ta.SetHeight(2)
-	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
-	ta.ShowLineNumbers = false
-
-	vp := viewport.New(80, 20)
-	vp.SetContent("")
+func NewChatModel(apiClient *api.Client, wsURL, token string) ChatModel {
+	input := textinput.New()
+	input.Placeholder = "Type your message... (Enter to send)"
+	// Server hard-limit is 1KB per WebSocket message (SPEC.md); keep this conservative.
+	input.CharLimit = 500
+	input.Width = 60
+	input.Focus()
 
 	return ChatModel{
-		messages:  make([]ChatMessage, 0),
-		viewport:  vp,
-		textarea:  ta,
-		status:    StatusDisconnected,
-		focused:   true,
-		userCount: 0,
+		apiClient:    apiClient,
+		wsURL:        wsURL,
+		token:        token,
+		inputFocused: true,
+		messageInput: input,
+		messages:     make([]ChatMessage, 0),
+		rooms:        make([]ChatRoom, 0),
 	}
 }
 
-// =====================================
-// TEA.MODEL INTERFACE
-// =====================================
-
-// Init implements tea.Model
+// Init initializes the chat model
 func (m ChatModel) Init() tea.Cmd {
-	return textarea.Blink
+	return tea.Batch(textinput.Blink, m.loadRooms())
 }
 
-// Update implements tea.Model
+// Update handles all messages for the chat view
 func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 	var cmds []tea.Cmd
-	var cmd tea.Cmd
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.updateDimensions()
+		m.messageInput.Width = min(m.width-10, 60)
+		return m, nil
 
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "enter":
-			if m.status == StatusConnected && strings.TrimSpace(m.textarea.Value()) != "" {
-				// Return command to send message
-				content := strings.TrimSpace(m.textarea.Value())
-				m.textarea.Reset()
-				return m, func() tea.Msg {
-					return SendChatMsg{
-						RoomID:  m.roomID,
-						Content: content,
-					}
-				}
-			}
+		return m.handleKeyPress(msg)
 
-		case "esc":
-			m.textarea.Blur()
-			m.focused = false
-			return m, nil
+	case ChatConnectedMsg:
+		if msg.Gen != m.connGen { return m, nil }
+		m.connecting = false
+		m.connected = true
+		m.conn = msg.Conn
+		m.lastError = nil
+		// Add system message for connection
+		m.messages = append(m.messages, ChatMessage{
+			Type:      "system",
+			Username:  "System",
+			Content:   fmt.Sprintf("Connected to #%s", m.currentRoomTitle),
+			Timestamp: time.Now(),
+		})
+		return m, m.listenForMessages(msg.Gen)
 
-		case "tab":
-			if !m.focused {
-				m.textarea.Focus()
-				m.focused = true
-				return m, textarea.Blink
-			}
-		}
+	case ChatDisconnectedMsg:
+		if msg.Gen != m.connGen { return m, nil }
+		m.connected = false
+		m.conn = nil
+		m.messages = append(m.messages, ChatMessage{
+			Type:      "system",
+			Username:  "System",
+			Content:   "Disconnected from server",
+			Timestamp: time.Now(),
+		})
+		return m, nil
 
 	case ChatMessageReceivedMsg:
-		// Add message to history
+		if msg.Gen != m.connGen { return m, nil }
+		// Add the received message to our list
 		m.messages = append(m.messages, ChatMessage{
-			ID:        msg.ID,
-			RoomID:    msg.RoomID,
+			Type:      msg.Type,
 			UserID:    msg.UserID,
 			Username:  msg.Username,
+			MangaID:   msg.MangaID,
 			Content:   msg.Content,
-			Type:      msg.Type,
 			Timestamp: msg.Timestamp,
-			IsOwn:     msg.UserID == m.userID,
 		})
-		m.updateViewportContent()
-		// Scroll to bottom
-		m.viewport.GotoBottom()
+		// Auto-scroll to latest
+		m.scrollOffset = 0
+		// Continue listening
+		return m, m.listenForMessages(msg.Gen)
 
-	case ChatRoomJoinedMsg:
-		m.roomID = msg.RoomID
-		m.roomName = msg.RoomName
-		m.mangaID = msg.MangaID
-		m.mangaName = msg.MangaName
-		m.userCount = msg.UserCount
-		m.status = StatusConnected
-		// Clear old messages
-		m.messages = make([]ChatMessage, 0)
-		m.updateViewportContent()
+	case ChatRoomsLoadedMsg:
+		m.rooms = msg.Rooms
+		m.roomsLoaded = true
+		if len(m.rooms) > 0 {
+			// Auto-select first room and connect
+			m.currentRoomID = m.rooms[0].ID
+			m.currentRoomTitle = m.rooms[0].Title
+			return m.startConnect("Auto-joining first room")
+		}
+		m.messages = append(m.messages, ChatMessage{
+			Type:      "system",
+			Username:  "System",
+			Content:   "No manga available for chat. Browse manga first!",
+			Timestamp: time.Now(),
+		})
+		return m, nil
 
-	case ChatConnectionStatusMsg:
-		m.status = msg.Status
-		m.userCount = msg.UserCount
-
-	case ChatUserCountMsg:
-		m.userCount = msg.Count
+	case ChatErrorMsg:
+		if msg.Gen != m.connGen { return m, nil }
+		m.lastError = msg.Err
+		m.connecting = false
+		m.connected = false
+		m.messages = append(m.messages, ChatMessage{
+			Type:      "error",
+			Username:  "Error",
+			Content:   msg.Err.Error(),
+			Timestamp: time.Now(),
+		})
+		return m, nil
 	}
 
-	// Update textarea if focused
-	if m.focused && m.status == StatusConnected {
-		m.textarea, cmd = m.textarea.Update(msg)
+	// Update text input
+	if m.inputFocused {
+		var cmd tea.Cmd
+		m.messageInput, cmd = m.messageInput.Update(msg)
 		cmds = append(cmds, cmd)
 	}
-
-	// Update viewport
-	m.viewport, cmd = m.viewport.Update(msg)
-	cmds = append(cmds, cmd)
 
 	return m, tea.Batch(cmds...)
 }
 
-// View implements tea.Model
-func (m ChatModel) View() string {
-	if m.width == 0 {
-		return "Loading chat..."
+// handleKeyPress processes keyboard input
+func (m ChatModel) handleKeyPress(msg tea.KeyMsg) (ChatModel, tea.Cmd) {
+	// Room selection mode
+	if m.showRoomList {
+		switch {
+		case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
+			m.showRoomList = false
+			return m, nil
+
+		case key.Matches(msg, key.NewBinding(key.WithKeys("j", "down"))):
+			if m.roomCursor < len(m.rooms)-1 {
+				m.roomCursor++
+			}
+			return m, nil
+
+		case key.Matches(msg, key.NewBinding(key.WithKeys("k", "up"))):
+			if m.roomCursor > 0 {
+				m.roomCursor--
+			}
+			return m, nil
+
+		case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
+			if len(m.rooms) > 0 && m.roomCursor < len(m.rooms) {
+				// Switch room
+				m.currentRoomID = m.rooms[m.roomCursor].ID
+				m.currentRoomTitle = m.rooms[m.roomCursor].Title
+				m.showRoomList = false
+				m.messages = nil // Clear messages for new room
+				return m.startConnect("Switching room")
+			}
+			return m, nil
+		}
+		return m, nil
 	}
 
+	// Normal chat mode
+	switch {
+	case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
+		if m.inputFocused && m.messageInput.Value() != "" && m.connected {
+			content := m.messageInput.Value()
+			m.messageInput.SetValue("")
+			return m, m.sendMessage(content)
+		}
+		return m, nil
+
+	case key.Matches(msg, key.NewBinding(key.WithKeys("tab"))):
+		// Toggle room list
+		m.showRoomList = !m.showRoomList
+		return m, nil
+
+	case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+r"))):
+		// Reconnect
+		if m.currentRoomID != "" {
+			return m.startConnect("Manual reconnect")
+		}
+		return m, nil
+
+	case key.Matches(msg, key.NewBinding(key.WithKeys("pgup"))):
+		// Scroll up
+		if m.scrollOffset < len(m.messages)-1 {
+			m.scrollOffset++
+		}
+		return m, nil
+
+	case key.Matches(msg, key.NewBinding(key.WithKeys("pgdown"))):
+		// Scroll down
+		if m.scrollOffset > 0 {
+			m.scrollOffset--
+		}
+		return m, nil
+	}
+
+	// Pass to text input
+	var cmd tea.Cmd
+	m.messageInput, cmd = m.messageInput.Update(msg)
+	return m, cmd
+}
+
+// startConnect updates UI state before dialing.
+func (m ChatModel) startConnect(reason string) (ChatModel, tea.Cmd) {
+	m.connGen++
+	gen := m.connGen
+	m.connecting = true
+	m.connected = false
+	m.lastError = nil
+	if reason != "" {
+		m.messages = append(m.messages, ChatMessage{
+			Type:      "system",
+			Username:  "System",
+			Content:   reason + "…",
+			Timestamp: time.Now(),
+		})
+	}
+	return m, m.connect(gen)
+}
+
+// View renders the chat view
+func (m ChatModel) View() string {
 	var b strings.Builder
 
-	// Header
+	// Header with room info and connection status
 	b.WriteString(m.renderHeader())
 	b.WriteString("\n")
 
-	// Messages viewport
+	// Room selector overlay (if active)
+	if m.showRoomList {
+		b.WriteString(m.renderRoomSelector())
+		b.WriteString("\n")
+		b.WriteString(styles.HelpStyle.Render("↑/↓ select • Enter join • Esc cancel"))
+		return b.String()
+	}
+
+	// Messages area
 	b.WriteString(m.renderMessages())
+	b.WriteString("\n")
+
+	// Divider
+	dividerWidth := min(m.width-4, 70)
+	b.WriteString(styles.RenderDivider(dividerWidth))
 	b.WriteString("\n")
 
 	// Input area
 	b.WriteString(m.renderInput())
+	b.WriteString("\n\n")
+
+	// Help bar
+	b.WriteString(m.renderHelp())
 
 	return b.String()
 }
 
-// =====================================
-// RENDERING HELPERS
-// =====================================
-
+// renderHeader renders the chat header with room and connection info
 func (m ChatModel) renderHeader() string {
-	// Connection status indicator
-	var statusIndicator string
-	switch m.status {
-	case StatusConnected:
-		statusIndicator = connectionOnlineStyle.Render("● Connected")
-	case StatusConnecting:
-		statusIndicator = connectionReconnectStyle.Render("◐ Connecting...")
-	case StatusReconnecting:
-		statusIndicator = connectionReconnectStyle.Render("↻ Reconnecting...")
-	default:
-		statusIndicator = connectionOfflineStyle.Render("○ Disconnected")
+	var b strings.Builder
+
+	b.WriteString(styles.TitleStyle.Render("💬 Chat"))
+	b.WriteString("  ")
+
+	// Room badge
+	roomName := m.currentRoomTitle
+	if roomName == "" {
+		roomName = "No Room Selected"
+	}
+	b.WriteString(styles.BadgePrimaryStyle.Render("#" + roomName))
+	b.WriteString("  ")
+
+	// Connection status
+	if m.connected {
+		b.WriteString(styles.SuccessStyle.Render("● Connected"))
+	} else if m.connecting {
+		b.WriteString(styles.WarningStyle.Render("○ Connecting..."))
+	} else {
+		b.WriteString(styles.ErrorStyle.Render("○ Disconnected"))
 	}
 
-	// Room name
-	roomDisplay := m.roomName
-	if roomDisplay == "" {
-		roomDisplay = m.roomID
-	}
-	if m.mangaName != "" {
-		roomDisplay = fmt.Sprintf("%s Discussion", m.mangaName)
-	}
+	// User count (if we had it)
+	b.WriteString("\n")
 
-	// User count
-	userInfo := ""
-	if m.userCount > 0 {
-		userInfo = userCountStyle.Render(fmt.Sprintf(" [%d online]", m.userCount))
-	}
-
-	header := fmt.Sprintf("💬 %s%s  %s",
-		roomDisplay,
-		userInfo,
-		statusIndicator,
-	)
-
-	return chatHeaderStyle.Width(m.width).Render(header)
+	return b.String()
 }
 
+// renderMessages renders the message list with proper formatting
 func (m ChatModel) renderMessages() string {
-	// Create viewport border
-	viewportStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#333333")).
-		Width(m.width - 2).
-		Height(m.height - 8) // Reserve space for header and input
-
-	return viewportStyle.Render(m.viewport.View())
-}
-
-func (m ChatModel) renderInput() string {
-	// Choose style based on connection status
-	var borderStyle lipgloss.Style
-	if m.status == StatusConnected {
-		borderStyle = inputBorderStyle
-	} else {
-		borderStyle = inputBorderDisabledStyle
-	}
-
-	// Input container
-	inputWidth := m.width - 4
-	m.textarea.SetWidth(inputWidth - 4)
-
-	input := borderStyle.Width(inputWidth).Render(m.textarea.View())
-
-	// Hint text
-	var hint string
-	if m.status != StatusConnected {
-		hint = inputHintStyle.Render("  ⚠ Connection required to send messages")
-	} else if m.focused {
-		hint = inputHintStyle.Render("  Enter: Send • Esc: Unfocus • Tab: Focus input")
-	} else {
-		hint = inputHintStyle.Render("  Tab: Focus input • Esc: Back")
-	}
-
-	return input + "\n" + hint
-}
-
-func (m *ChatModel) updateDimensions() {
-	// Header takes ~2 lines, input takes ~4 lines
-	viewportHeight := m.height - 8
-	if viewportHeight < 5 {
-		viewportHeight = 5
-	}
-
-	m.viewport.Width = m.width - 4
-	m.viewport.Height = viewportHeight
-	m.textarea.SetWidth(m.width - 8)
-
-	m.ready = true
-	m.updateViewportContent()
-}
-
-func (m *ChatModel) updateViewportContent() {
-	if !m.ready {
-		return
-	}
-
-	var lines []string
-
 	if len(m.messages) == 0 {
-		// Empty state
-		emptyMsg := lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#666666")).
-			Italic(true).
-			Align(lipgloss.Center).
-			Width(m.viewport.Width).
-			Render("\n\n  No messages yet. Start the conversation! 💬\n")
-		lines = append(lines, emptyMsg)
-	} else {
-		for _, msg := range m.messages {
-			lines = append(lines, m.formatMessage(msg))
-		}
+		return styles.HelpStyle.Render("\n  No messages yet. Be the first to say something!\n")
 	}
 
-	content := strings.Join(lines, "\n")
-	m.viewport.SetContent(content)
+	var b strings.Builder
+
+	// Calculate visible messages (show last N)
+	maxVisible := 12
+	startIdx := len(m.messages) - maxVisible - m.scrollOffset
+	if startIdx < 0 {
+		startIdx = 0
+	}
+	endIdx := len(m.messages) - m.scrollOffset
+	if endIdx > len(m.messages) {
+		endIdx = len(m.messages)
+	}
+	if endIdx < startIdx {
+		endIdx = startIdx
+	}
+
+	// Scroll indicator
+	if startIdx > 0 {
+		b.WriteString(styles.HelpStyle.Render("  ↑ " + fmt.Sprintf("%d more messages", startIdx)))
+		b.WriteString("\n")
+	}
+
+	for i := startIdx; i < endIdx; i++ {
+		msg := m.messages[i]
+		b.WriteString(m.renderSingleMessage(msg))
+		b.WriteString("\n")
+	}
+
+	// Scroll indicator
+	if m.scrollOffset > 0 {
+		b.WriteString(styles.HelpStyle.Render("  ↓ " + fmt.Sprintf("%d newer messages", m.scrollOffset)))
+		b.WriteString("\n")
+	}
+
+	return b.String()
 }
 
-func (m ChatModel) formatMessage(msg ChatMessage) string {
-	timestamp := timestampStyle.Render(formatChatTime(msg.Timestamp))
+// renderSingleMessage renders a single chat message
+func (m ChatModel) renderSingleMessage(msg ChatMessage) string {
+	var b strings.Builder
+
+	// Format timestamp
+	timeStr := msg.Timestamp.Format("15:04:05")
 
 	switch msg.Type {
+	case "system", "error":
+		// System/error messages centered with different styling
+		style := styles.HelpStyle
+		if msg.Type == "error" {
+			style = styles.ErrorStyle
+		}
+		b.WriteString("  ")
+		b.WriteString(style.Render("━━━ " + msg.Content + " ━━━"))
+
 	case "join":
-		return joinMessageStyle.Render(fmt.Sprintf("  → %s joined the room  %s", msg.Username, timestamp))
+		// User joined
+		b.WriteString("  ")
+		b.WriteString(styles.SuccessStyle.Render("→ "))
+		b.WriteString(styles.MetaKeyStyle.Render(msg.Username))
+		b.WriteString(styles.HelpStyle.Render(" joined the chat"))
 
 	case "leave":
-		return leaveMessageStyle.Render(fmt.Sprintf("  ← %s left the room  %s", msg.Username, timestamp))
+		// User left
+		b.WriteString("  ")
+		b.WriteString(styles.WarningStyle.Render("← "))
+		b.WriteString(styles.MetaKeyStyle.Render(msg.Username))
+		b.WriteString(styles.HelpStyle.Render(" left the chat"))
 
-	case "system":
-		return systemMessageStyle.Width(m.viewport.Width).Render(msg.Content)
+	case "history":
+		// Historical message (slightly dimmed)
+		b.WriteString("  ")
+		b.WriteString(styles.HelpStyle.Render("[" + timeStr + "] "))
+		b.WriteString(styles.MetaKeyStyle.Render(msg.Username))
+		b.WriteString(styles.HelpStyle.Render(": " + msg.Content))
 
-	default: // "text" or empty
-		var usernameRender string
-		if msg.IsOwn {
-			usernameRender = ownUsernameStyle.Render(msg.Username)
-		} else {
-			usernameRender = usernameStyle.Render(msg.Username)
+	default: // "message" or regular
+		// Regular chat message
+		b.WriteString("  ")
+		b.WriteString(styles.HelpStyle.Render("[" + timeStr + "] "))
+		b.WriteString(styles.HighlightStyle.Render(msg.Username))
+		b.WriteString(styles.CardContentStyle.Render(": " + msg.Content))
+	}
+
+	return b.String()
+}
+
+// renderRoomSelector renders the room selection panel
+func (m ChatModel) renderRoomSelector() string {
+	var b strings.Builder
+
+	b.WriteString("\n")
+	b.WriteString(styles.CardTitleStyle.Render("  Select Manga Chat Room"))
+	b.WriteString("\n\n")
+
+	if len(m.rooms) == 0 {
+		b.WriteString(styles.HelpStyle.Render("  No manga available. Browse manga first!"))
+		return b.String()
+	}
+
+	// Show rooms with selection cursor
+	for i, room := range m.rooms {
+		prefix := "    "
+		style := styles.ListItemStyle
+
+		if i == m.roomCursor {
+			prefix = "  ▸ "
+			style = styles.ListItemSelectedStyle
 		}
 
-		content := messageContentStyle.Render(msg.Content)
+		roomLabel := room.Title
+		if room.ID == m.currentRoomID {
+			roomLabel += " (current)"
+		}
 
-		return fmt.Sprintf("  %s %s: %s", timestamp, usernameRender, content)
+		b.WriteString(style.Render(prefix + "#" + roomLabel))
+		b.WriteString("\n")
+	}
+
+	return b.String()
+}
+
+// renderInput renders the message input area
+func (m ChatModel) renderInput() string {
+	var b strings.Builder
+
+	if !m.connected {
+		b.WriteString(styles.HelpStyle.Render("  [Not connected - press Ctrl+R to reconnect]"))
+		return b.String()
+	}
+
+	b.WriteString("  ")
+	b.WriteString(styles.InputFocusedStyle.Render("> "))
+	b.WriteString(m.messageInput.View())
+
+	return b.String()
+}
+
+// renderHelp renders the help bar
+func (m ChatModel) renderHelp() string {
+	if m.showRoomList {
+		return styles.HelpStyle.Render("↑/↓ navigate • Enter select • Esc cancel")
+	}
+
+	parts := []string{
+		"Enter send",
+		"Tab rooms",
+		"Ctrl+R reconnect",
+		"PgUp/PgDn scroll",
+	}
+
+	return styles.HelpStyle.Render(strings.Join(parts, " • "))
+}
+
+// connect establishes WebSocket connection to the manga chat room
+func (m ChatModel) connect(gen int64) tea.Cmd {
+	return func() tea.Msg {
+		if m.currentRoomID == "" {
+			return ChatErrorMsg{Gen: gen, Err: fmt.Errorf("no room selected")}
+		}
+
+		// Close existing connection if any
+		if m.conn != nil {
+			m.conn.Close()
+		}
+
+		// Build WebSocket URL: ws://host:port/ws/manga/{manga_id}?token=xxx
+		wsURL := strings.TrimRight(m.wsURL, "/") + "/" + m.currentRoomID
+		if m.token != "" {
+			wsURL += "?token=" + m.token
+		}
+
+		// Create dialer with timeout + subprotocol (server advertises mangahub.tui-v1)
+		dialer := websocket.Dialer{
+			HandshakeTimeout: 10 * time.Second,
+			Subprotocols:     []string{"mangahub.tui-v1"},
+		}
+
+		// Headers for the connection
+		headers := make(map[string][]string)
+		headers["Origin"] = []string{"http://localhost"}
+		headers["User-Agent"] = []string{"mangahub-tui/1.0"}
+
+		// Connect
+		conn, resp, err := dialer.Dial(wsURL, headers)
+		if err != nil {
+			// If handshake failed, try to surface server response body (often contains auth error).
+			if resp != nil && resp.Body != nil {
+				defer resp.Body.Close()
+				body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+				if len(body) > 0 {
+					return ChatErrorMsg{Gen: gen, Err: fmt.Errorf("connection failed: %w (status=%d body=%s)", err, resp.StatusCode, strings.TrimSpace(string(body)))}
+				}
+				return ChatErrorMsg{Gen: gen, Err: fmt.Errorf("connection failed: %w (status=%d)", err, resp.StatusCode)}
+			}
+			return ChatErrorMsg{Gen: gen, Err: fmt.Errorf("connection failed: %w", err)}
+		}
+
+		return ChatConnectedMsg{Gen: gen, Conn: conn}
 	}
 }
 
-func formatChatTime(t time.Time) string {
-	now := time.Now()
-	if t.Day() == now.Day() && t.Month() == now.Month() && t.Year() == now.Year() {
-		return t.Format("[15:04]")
+// sendMessage sends a chat message through WebSocket
+func (m ChatModel) sendMessage(content string) tea.Cmd {
+	gen := m.connGen
+	return func() tea.Msg {
+		if m.conn == nil {
+			return ChatErrorMsg{Gen: gen, Err: fmt.Errorf("not connected")}
+		}
+
+		// Server expects: {"content": "message text"}
+		payload := map[string]string{
+			"content": content,
+		}
+
+		// Server enforces max 1KB per message; validate before sending.
+		data, err := json.Marshal(payload)
+		if err != nil {
+			return ChatErrorMsg{Gen: gen, Err: fmt.Errorf("send failed: %w", err)}
+		}
+		if len(data) > 1024 {
+			return ChatErrorMsg{Gen: gen, Err: fmt.Errorf("message too large (%d bytes > 1024)", len(data))}
+		}
+		if err := m.conn.WriteMessage(websocket.TextMessage, data); err != nil {
+			if isExpectedWSCloseErr(err) {
+				return ChatDisconnectedMsg{Gen: gen}
+			}
+			return ChatErrorMsg{Gen: gen, Err: fmt.Errorf("send failed: %w", err)}
+		}
+
+		return nil
 	}
-	return t.Format("[Jan 2 15:04]")
 }
 
-// =====================================
-// PUBLIC METHODS
-// =====================================
+// listenForMessages reads messages from WebSocket
+func (m ChatModel) listenForMessages(gen int64) tea.Cmd {
+	return func() tea.Msg {
+		if m.conn == nil {
+			return ChatDisconnectedMsg{Gen: gen}
+		}
 
-// SetUser sets the current user info
-func (m *ChatModel) SetUser(userID, username string) {
-	m.userID = userID
-	m.username = username
+		// Read message from server
+		// Server sends: {type, user_id, username, manga_id, content, timestamp}
+		var msg struct {
+			Type      string    `json:"type"`
+			UserID    string    `json:"user_id"`
+			Username  string    `json:"username"`
+			MangaID   string    `json:"manga_id"`
+			Content   string    `json:"content"`
+			Timestamp time.Time `json:"timestamp"`
+		}
+
+		if err := m.conn.ReadJSON(&msg); err != nil {
+			// Expected close (including "use of closed network connection") => disconnect.
+			if isExpectedWSCloseErr(err) {
+				return ChatDisconnectedMsg{Gen: gen}
+			}
+			return ChatErrorMsg{Gen: gen, Err: fmt.Errorf("read failed: %w", err)}
+		}
+
+		// Handle the message based on type
+		username := msg.Username
+		if username == "" {
+			username = "Unknown"
+		}
+
+		content := msg.Content
+		timestamp := msg.Timestamp
+		if timestamp.IsZero() {
+			timestamp = time.Now()
+		}
+
+		return ChatMessageReceivedMsg{
+			Gen:       gen,
+			Type:      msg.Type,
+			UserID:    msg.UserID,
+			Username:  username,
+			MangaID:   msg.MangaID,
+			Content:   content,
+			Timestamp: timestamp,
+		}
+	}
 }
 
-// SetRoom sets the current room info
-func (m *ChatModel) SetRoom(roomID, roomName, mangaID, mangaName string) {
-	m.roomID = roomID
-	m.roomName = roomName
-	m.mangaID = mangaID
-	m.mangaName = mangaName
+// loadRooms fetches manga list to use as chat rooms
+func (m ChatModel) loadRooms() tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		resp, err := m.apiClient.ListManga(ctx, 1, 20)
+		if err != nil {
+			return ChatErrorMsg{Err: fmt.Errorf("failed to load rooms: %w", err)}
+		}
+
+		rooms := make([]ChatRoom, 0, len(resp.Data))
+		for _, manga := range resp.Data {
+			rooms = append(rooms, ChatRoom{
+				ID:    manga.ID,
+				Title: manga.Title,
+			})
+		}
+
+		return ChatRoomsLoadedMsg{Rooms: rooms}
+	}
 }
 
-// SetStatus sets the connection status
-func (m *ChatModel) SetStatus(status ConnectionStatus) {
-	m.status = status
+// Close closes the WebSocket connection
+func (m *ChatModel) Close() {
+	m.connGen++
+	if m.conn != nil {
+		m.conn.WriteMessage(websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+		m.conn.Close()
+		m.conn = nil
+		m.connected = false
+	}
 }
 
-// IsInputFocused reports whether the chat textarea currently has focus.
-func (m ChatModel) IsInputFocused() bool {
-	return m.focused && m.textarea.Focused()
+// SetToken updates the auth token for WebSocket connection
+func (m *ChatModel) SetToken(token string) {
+	m.token = token
 }
 
-// ClearMessages clears all messages
-func (m *ChatModel) ClearMessages() {
-	m.messages = make([]ChatMessage, 0)
-	m.updateViewportContent()
+// Helper function
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
-// AddMessage adds a message to the chat
-func (m *ChatModel) AddMessage(msg ChatMessage) {
-	m.messages = append(m.messages, msg)
-	m.updateViewportContent()
-	m.viewport.GotoBottom()
+func isExpectedWSCloseErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, net.ErrClosed) || errors.Is(err, io.EOF) {
+		return true
+	}
+	if websocket.IsCloseError(err,
+		websocket.CloseNormalClosure,
+		websocket.CloseGoingAway,
+		websocket.CloseNoStatusReceived,
+		websocket.CloseAbnormalClosure,
+	) {
+		return true
+	}
+	var ce *websocket.CloseError
+	return errors.As(err, &ce) || strings.Contains(err.Error(), "use of closed network connection")
 }
 
-// MessageCount returns the number of messages
-func (m ChatModel) MessageCount() int {
-	return len(m.messages)
+// ============================================================================
+// Message Types for Bubble Tea communication
+// ============================================================================
+
+// ChatConnectedMsg signals successful WebSocket connection
+type ChatConnectedMsg struct {
+	Gen  int64
+	Conn *websocket.Conn
 }
 
-// RoomID returns the current room ID
-func (m ChatModel) RoomID() string {
-	return m.roomID
-}
+// ChatDisconnectedMsg signals WebSocket disconnection
+type ChatDisconnectedMsg struct{ Gen int64 }
 
-// =====================================
-// BUBBLE TEA MESSAGES
-// =====================================
-
-// SendChatMsg is returned when user wants to send a message
-type SendChatMsg struct {
-	RoomID  string
-	Content string
-}
-
-// ChatMessageReceivedMsg is sent when a message is received
+// ChatMessageReceivedMsg carries a received chat message
 type ChatMessageReceivedMsg struct {
-	ID        string
-	RoomID    string
+	Gen       int64
+	Type      string
 	UserID    string
 	Username  string
+	MangaID   string
 	Content   string
-	Type      string
 	Timestamp time.Time
 }
 
-// ChatRoomJoinedMsg is sent when successfully joined a room
-type ChatRoomJoinedMsg struct {
-	RoomID    string
-	RoomName  string
-	MangaID   string
-	MangaName string
-	UserCount int
+// ChatErrorMsg carries an error
+type ChatErrorMsg struct {
+	Gen int64
+	Err error
 }
 
-// ChatConnectionStatusMsg is sent when connection status changes
-type ChatConnectionStatusMsg struct {
-	Status    ConnectionStatus
-	UserCount int
-}
-
-// ChatUserCountMsg is sent when user count changes
-type ChatUserCountMsg struct {
-	Count int
+// ChatRoomsLoadedMsg signals rooms have been loaded
+type ChatRoomsLoadedMsg struct {
+	Rooms []ChatRoom
 }

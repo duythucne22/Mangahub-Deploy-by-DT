@@ -1,54 +1,64 @@
 package models
 
-import (
-	"time"
-)
+import "time"
 
-// APIResponse is a generic API response wrapper
+// ✅ GENERIC API RESPONSE 
 type APIResponse struct {
-	Success   bool        `json:"success"`
-	Message   string      `json:"message,omitempty"`
-	Data      interface{} `json:"data,omitempty"`
-	Error     *APIError   `json:"error,omitempty"`
-	Timestamp time.Time   `json:"timestamp"`
+    Success   bool        `json:"success"`
+    Message   string      `json:"message,omitempty"`
+    Data      interface{} `json:"data,omitempty"`
+    Error     string      `json:"error,omitempty"` // Simplified error
+    Timestamp time.Time   `json:"timestamp"`
 }
 
-// APIError represents an error response
-type APIError struct {
-	Code    string                 `json:"code"`
-	Message string                 `json:"message"`
-	Details map[string]interface{} `json:"details,omitempty"`
+// ✅ AUTH RESPONSE 
+type AuthResponse struct {
+    Token string `json:"token"`
+    User  struct {
+        ID       string `json:"id"`
+        Username string `json:"username"`
+        Role     string `json:"role"`
+    } `json:"user"`
+    ExpiresIn int `json:"expires_in,omitempty"` // seconds
 }
 
-// PaginationMeta represents pagination metadata
+// ✅ PAGINATION (Match database capabilities)
 type PaginationMeta struct {
-	Total      int  `json:"total"`
-	Limit      int  `json:"limit"`
-	Offset     int  `json:"offset"`
-	HasMore    bool `json:"has_more"`
-	Page       int  `json:"page"`
-	TotalPages int  `json:"total_pages"`
+    Total   int  `json:"total"`
+    Limit   int  `json:"limit"`
+    Offset  int  `json:"offset"`
+    HasMore bool `json:"has_more"`
 }
 
-// NewSuccessResponse creates a success response
-func NewSuccessResponse(data interface{}, message string) *APIResponse {
-	return &APIResponse{
-		Success:   true,
-		Message:   message,
-		Data:      data,
-		Timestamp: time.Now(),
-	}
+// ✅ COMMUNITY ACTIVITY RESPONSE
+type CommunityStats struct {
+    TotalActiveManga int `json:"total_active_manga"`
+    TotalComments    int `json:"total_comments"`
+    TotalChatMessages int `json:"total_chat_messages"`
+    ActiveUsers      int `json:"active_users"`
 }
 
-// NewErrorResponse creates an error response
-func NewErrorResponse(code, message string, details map[string]interface{}) *APIResponse {
-	return &APIResponse{
-		Success: false,
-		Error: &APIError{
-			Code:    code,
-			Message: message,
-			Details: details,
-		},
-		Timestamp: time.Now(),
+// ✅ ACTIVITY FEED ITEM (Matches schema.activity_feed)
+type ActivityFeedItem struct {
+    ID        string    `json:"id"`
+    Type      string    `json:"type"` // 'comment', 'chat', 'manga_update'
+    Username  *string   `json:"username,omitempty"`
+    MangaTitle *string  `json:"manga_title,omitempty"`
+    CreatedAt time.Time `json:"created_at"`
+}
+
+// ✅ GENERIC PAGINATED RESPONSE
+type PaginatedResponse[T any] struct {
+    Data []T           `json:"data"`
+    Meta PaginationMeta `json:"meta"`
+}
+
+// NewPaginationMeta builds pagination metadata consistently
+func NewPaginationMeta(total, limit, offset int) PaginationMeta {
+	return PaginationMeta{
+		Total:   total,
+		Limit:   limit,
+		Offset:  offset,
+		HasMore: offset+limit < total,
 	}
 }

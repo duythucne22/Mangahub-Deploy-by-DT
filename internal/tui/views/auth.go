@@ -1,219 +1,95 @@
-// Package views - Authentication View
-// Login and Signup forms for MangaHub TUI
-// Layout:
-//
-//	┌── 🔐 MangaHub Login ───────────────────────────────────┐
-//	│                                                        │
-//	│              📚 Welcome to MangaHub                    │
-//	│           Your Manga Reading Terminal                  │
-//	│                                                        │
-//	│  ┌─────────────────────────────────────────────────┐   │
-//	│  │ Username: [________________]                    │   │
-//	│  │ Password: [________________]                    │   │
-//	│  │                                                 │   │
-//	│  │        [ Login ]    [ Sign Up ]                 │   │
-//	│  └─────────────────────────────────────────────────┘   │
-//	│                                                        │
-//	│  [Tab] Switch field  [Enter] Submit  [Esc] Guest mode  │
-//	└────────────────────────────────────────────────────────┘
 package views
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
-
 	"mangahub/internal/tui/api"
 	"mangahub/internal/tui/styles"
 	"mangahub/pkg/models"
 )
 
-// =====================================
-// AUTH MODEL
-// =====================================
-
-// AuthMode represents login or signup mode
+// AuthMode represents login or register mode
 type AuthMode int
 
 const (
 	ModeLogin AuthMode = iota
-	ModeSignup
+	ModeRegister
 )
 
-// AuthModel holds the authentication view state
+// AuthModel handles login/register forms
 type AuthModel struct {
-	width  int
-	height int
-	theme  *styles.Theme
-
-	// Form state
-	mode         AuthMode
-	focusedField int // 0=username, 1=email (signup only), 2=password, 3=confirm (signup only)
-
-	// Text inputs
-	usernameInput textinput.Model
-	emailInput    textinput.Model
-	passwordInput textinput.Model
-	confirmInput  textinput.Model
-
+	mode           AuthMode
+	apiClient      *api.Client
+	
+	// Input fields
+	usernameInput  textinput.Model
+	emailInput     textinput.Model
+	passwordInput  textinput.Model
+	confirmInput   textinput.Model
+	
 	// State
-	loading   bool
-	lastError string
-	message   string
-	loggedIn  bool
-	user      *models.User
-
-	// Components
-	spinner spinner.Model
-
-	// API client
-	client *api.Client
+	focusIndex     int
+	loading        bool
+	err            error
+	
+	// Window size
+	width          int
+	height         int
 }
 
 // NewAuthModel creates a new auth model
-func NewAuthModel(client *api.Client) *AuthModel {
+func NewAuthModel(apiClient *api.Client) AuthModel {
 	// Username input
 	usernameInput := textinput.New()
-	usernameInput.Placeholder = "Enter username"
-	usernameInput.CharLimit = 32
+	usernameInput.Placeholder = "Username"
+	usernameInput.CharLimit = 50
 	usernameInput.Width = 30
 	usernameInput.Focus()
-
-	// Email input (for signup)
+	
+	// Email input (for registration)
 	emailInput := textinput.New()
-	emailInput.Placeholder = "Enter email"
-	emailInput.CharLimit = 64
+	emailInput.Placeholder = "Email"
+	emailInput.CharLimit = 100
 	emailInput.Width = 30
-
+	
 	// Password input
 	passwordInput := textinput.New()
-	passwordInput.Placeholder = "Enter password"
-	passwordInput.CharLimit = 64
+	passwordInput.Placeholder = "Password"
+	passwordInput.CharLimit = 100
 	passwordInput.Width = 30
 	passwordInput.EchoMode = textinput.EchoPassword
 	passwordInput.EchoCharacter = '•'
-
-	// Confirm password input (for signup)
+	
+	// Confirm password input (for registration)
 	confirmInput := textinput.New()
-	confirmInput.Placeholder = "Confirm password"
-	confirmInput.CharLimit = 64
+	confirmInput.Placeholder = "Confirm Password"
+	confirmInput.CharLimit = 100
 	confirmInput.Width = 30
 	confirmInput.EchoMode = textinput.EchoPassword
 	confirmInput.EchoCharacter = '•'
-
-	s := spinner.New()
-	s.Spinner = spinner.Dot
-	s.Style = lipgloss.NewStyle().Foreground(styles.ColorPrimary)
-
-	return &AuthModel{
-		theme:         styles.DefaultTheme,
+	
+	return AuthModel{
 		mode:          ModeLogin,
+		apiClient:     apiClient,
 		usernameInput: usernameInput,
 		emailInput:    emailInput,
 		passwordInput: passwordInput,
 		confirmInput:  confirmInput,
-		spinner:       s,
-		client:        client,
+		focusIndex:    0,
 	}
 }
 
-// NewAuth creates a new auth model with default client
-func NewAuth() AuthModel {
-	m := NewAuthModel(api.GetClient())
-	return *m
-}
-
-// =====================================
-// MESSAGES
-// =====================================
-
-// AuthSuccessMsg signals successful authentication
-type AuthSuccessMsg struct {
-	User *models.User
-}
-
-// AuthErrorMsg signals authentication failure
-type AuthErrorMsg struct {
-	Error string
-}
-
-// =====================================
-// COMMANDS
-// =====================================
-
-func (m AuthModel) doLogin() tea.Cmd {
-	return func() tea.Msg {
-		ctx := context.Background()
-
-		username := strings.TrimSpace(m.usernameInput.Value())
-		password := m.passwordInput.Value()
-
-		if username == "" || password == "" {
-			return AuthErrorMsg{Error: "Username and password are required"}
-		}
-
-		user, err := m.client.Login(ctx, username, password)
-		if err != nil {
-			return AuthErrorMsg{Error: err.Error()}
-		}
-
-		return AuthSuccessMsg{User: user}
-	}
-}
-
-func (m AuthModel) doRegister() tea.Cmd {
-	return func() tea.Msg {
-		ctx := context.Background()
-
-		username := strings.TrimSpace(m.usernameInput.Value())
-		email := strings.TrimSpace(m.emailInput.Value())
-		password := m.passwordInput.Value()
-		confirm := m.confirmInput.Value()
-
-		// Validation
-		if username == "" {
-			return AuthErrorMsg{Error: "Username is required"}
-		}
-		if len(username) < 3 {
-			return AuthErrorMsg{Error: "Username must be at least 3 characters"}
-		}
-		if email == "" {
-			return AuthErrorMsg{Error: "Email is required"}
-		}
-		if !strings.Contains(email, "@") {
-			return AuthErrorMsg{Error: "Invalid email format"}
-		}
-		if password == "" {
-			return AuthErrorMsg{Error: "Password is required"}
-		}
-		if len(password) < 6 {
-			return AuthErrorMsg{Error: "Password must be at least 6 characters"}
-		}
-		if password != confirm {
-			return AuthErrorMsg{Error: "Passwords do not match"}
-		}
-
-		user, err := m.client.Register(ctx, username, email, password)
-		if err != nil {
-			return AuthErrorMsg{Error: err.Error()}
-		}
-
-		return AuthSuccessMsg{User: user}
-	}
-}
-
-// =====================================
-// MODEL METHODS
-// =====================================
-
+// Init initializes the model
 func (m AuthModel) Init() tea.Cmd {
 	return textinput.Blink
 }
 
+// Update handles messages
 func (m AuthModel) Update(msg tea.Msg) (AuthModel, tea.Cmd) {
 	var cmds []tea.Cmd
 
@@ -221,263 +97,304 @@ func (m AuthModel) Update(msg tea.Msg) (AuthModel, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		return m, nil
 
 	case tea.KeyMsg:
-		// Clear error on keypress
-		m.lastError = ""
-
-		switch msg.String() {
-		case "ctrl+c", "esc":
-			// Allow guest mode - return nil to signal skip
-			return m, func() tea.Msg {
-				return AuthSkipMsg{}
+		switch {
+		case key.Matches(msg, key.NewBinding(key.WithKeys("tab"))):
+			return m.nextField(), nil
+			
+		case key.Matches(msg, key.NewBinding(key.WithKeys("shift+tab"))):
+			return m.prevField(), nil
+			
+		case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
+			if m.isSubmitFocused() {
+				return m.submit()
 			}
-
-		case "tab", "shift+tab":
-			// Cycle through fields
-			if m.mode == ModeLogin {
-				m.focusedField = (m.focusedField + 1) % 2
-			} else {
-				if msg.String() == "shift+tab" {
-					m.focusedField = (m.focusedField + 3) % 4
-				} else {
-					m.focusedField = (m.focusedField + 1) % 4
-				}
-			}
-			m.updateFocus()
-
-		case "enter":
-			if m.loading {
-				return m, nil
-			}
-			m.loading = true
-			if m.mode == ModeLogin {
-				return m, tea.Batch(m.spinner.Tick, m.doLogin())
-			}
-			return m, tea.Batch(m.spinner.Tick, m.doRegister())
-
-		case "ctrl+s":
-			// Toggle between login and signup
-			if m.mode == ModeLogin {
-				m.mode = ModeSignup
-				m.focusedField = 0
-			} else {
-				m.mode = ModeLogin
-				m.focusedField = 0
-			}
-			m.updateFocus()
+			return m.nextField(), nil
+			
+		case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+t"))):
+			// Toggle between login and register
+			m.toggleMode()
 			return m, nil
-
-		default:
-			// Update focused input
-			var cmd tea.Cmd
-			switch m.focusedField {
-			case 0:
-				m.usernameInput, cmd = m.usernameInput.Update(msg)
-			case 1:
-				if m.mode == ModeSignup {
-					m.emailInput, cmd = m.emailInput.Update(msg)
-				} else {
-					m.passwordInput, cmd = m.passwordInput.Update(msg)
-				}
-			case 2:
-				if m.mode == ModeSignup {
-					m.passwordInput, cmd = m.passwordInput.Update(msg)
-				}
-			case 3:
-				if m.mode == ModeSignup {
-					m.confirmInput, cmd = m.confirmInput.Update(msg)
-				}
-			}
-			cmds = append(cmds, cmd)
 		}
 
 	case AuthSuccessMsg:
 		m.loading = false
-		m.loggedIn = true
-		m.user = msg.User
-		m.message = "Login successful! Welcome, " + msg.User.Username
-		// This will be handled by app.go
-		return m, func() tea.Msg { return msg }
+		// Parent model will handle navigation
+		return m, nil
 
 	case AuthErrorMsg:
 		m.loading = false
-		m.lastError = msg.Error
-
-	case spinner.TickMsg:
-		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(msg)
-		cmds = append(cmds, cmd)
+		m.err = msg.Err
+		return m, nil
 	}
+
+	// Update focused input
+	var cmd tea.Cmd
+	switch m.focusIndex {
+	case 0:
+		m.usernameInput, cmd = m.usernameInput.Update(msg)
+	case 1:
+		if m.mode == ModeRegister {
+			m.emailInput, cmd = m.emailInput.Update(msg)
+		} else {
+			m.passwordInput, cmd = m.passwordInput.Update(msg)
+		}
+	case 2:
+		if m.mode == ModeRegister {
+			m.passwordInput, cmd = m.passwordInput.Update(msg)
+		}
+	case 3:
+		if m.mode == ModeRegister {
+			m.confirmInput, cmd = m.confirmInput.Update(msg)
+		}
+	}
+	cmds = append(cmds, cmd)
 
 	return m, tea.Batch(cmds...)
 }
 
+// View renders the auth form
+func (m AuthModel) View() string {
+	var b strings.Builder
+
+	// Title
+	title := "🔐 Login"
+	if m.mode == ModeRegister {
+		title = "📝 Register"
+	}
+	b.WriteString(styles.TitleStyle.Render(title))
+	b.WriteString("\n\n")
+
+	// Form card
+	var formContent strings.Builder
+
+	// Username field
+	formContent.WriteString(m.renderField("Username", m.usernameInput.View(), m.focusIndex == 0))
+	formContent.WriteString("\n")
+
+	if m.mode == ModeRegister {
+		// Email field
+		formContent.WriteString(m.renderField("Email", m.emailInput.View(), m.focusIndex == 1))
+		formContent.WriteString("\n")
+		
+		// Password field
+		formContent.WriteString(m.renderField("Password", m.passwordInput.View(), m.focusIndex == 2))
+		formContent.WriteString("\n")
+		
+		// Confirm password field
+		formContent.WriteString(m.renderField("Confirm", m.confirmInput.View(), m.focusIndex == 3))
+		formContent.WriteString("\n\n")
+		
+		// Submit button
+		submitStyle := styles.ButtonStyle
+		if m.focusIndex == 4 {
+			submitStyle = styles.ButtonActiveStyle
+		}
+		formContent.WriteString(submitStyle.Render("  Register  "))
+	} else {
+		// Password field
+		formContent.WriteString(m.renderField("Password", m.passwordInput.View(), m.focusIndex == 1))
+		formContent.WriteString("\n\n")
+		
+		// Submit button
+		submitStyle := styles.ButtonStyle
+		if m.focusIndex == 2 {
+			submitStyle = styles.ButtonActiveStyle
+		}
+		formContent.WriteString(submitStyle.Render("  Login  "))
+	}
+
+	b.WriteString(styles.CardStyle.Render(formContent.String()))
+	b.WriteString("\n\n")
+
+	// Error message
+	if m.err != nil {
+		b.WriteString(styles.ErrorStyle.Render("Error: " + m.err.Error()))
+		b.WriteString("\n\n")
+	}
+
+	// Loading indicator
+	if m.loading {
+		b.WriteString(styles.SpinnerStyle.Render("⟳ "))
+		b.WriteString(styles.InfoStyle.Render("Processing..."))
+		b.WriteString("\n\n")
+	}
+
+	// Toggle hint
+	if m.mode == ModeLogin {
+		b.WriteString(styles.HelpStyle.Render("Press Ctrl+T to switch to Register"))
+	} else {
+		b.WriteString(styles.HelpStyle.Render("Press Ctrl+T to switch to Login"))
+	}
+
+	return b.String()
+}
+
+// renderField renders a form field with label
+func (m AuthModel) renderField(label, input string, focused bool) string {
+	labelStyle := styles.MetaKeyStyle
+	if focused {
+		labelStyle = styles.InputFocusedStyle
+	}
+	
+	return fmt.Sprintf("%s\n%s", labelStyle.Render(label+":"), input)
+}
+
+// nextField moves focus to the next field
+func (m AuthModel) nextField() AuthModel {
+	maxIndex := 2 // login mode
+	if m.mode == ModeRegister {
+		maxIndex = 4
+	}
+	
+	m.focusIndex = (m.focusIndex + 1) % (maxIndex + 1)
+	m.updateFocus()
+	return m
+}
+
+// prevField moves focus to the previous field
+func (m AuthModel) prevField() AuthModel {
+	maxIndex := 2
+	if m.mode == ModeRegister {
+		maxIndex = 4
+	}
+	
+	m.focusIndex--
+	if m.focusIndex < 0 {
+		m.focusIndex = maxIndex
+	}
+	m.updateFocus()
+	return m
+}
+
+// updateFocus updates input focus states
 func (m *AuthModel) updateFocus() {
 	m.usernameInput.Blur()
 	m.emailInput.Blur()
 	m.passwordInput.Blur()
 	m.confirmInput.Blur()
 
-	switch m.focusedField {
+	switch m.focusIndex {
 	case 0:
 		m.usernameInput.Focus()
 	case 1:
-		if m.mode == ModeSignup {
+		if m.mode == ModeRegister {
 			m.emailInput.Focus()
 		} else {
 			m.passwordInput.Focus()
 		}
 	case 2:
-		if m.mode == ModeSignup {
+		if m.mode == ModeRegister {
 			m.passwordInput.Focus()
 		}
 	case 3:
-		if m.mode == ModeSignup {
+		if m.mode == ModeRegister {
 			m.confirmInput.Focus()
 		}
 	}
 }
 
-func (m AuthModel) View() string {
-	if m.width == 0 || m.height == 0 {
-		return ""
-	}
-
-	// Build the form
-	var content strings.Builder
-
-	// Header
-	title := m.theme.Title.Render("📚 Welcome to MangaHub")
-	subtitle := m.theme.DimText.Render("Your Manga Reading Terminal")
-	content.WriteString(lipgloss.JoinVertical(lipgloss.Center, title, subtitle))
-	content.WriteString("\n\n")
-
-	// Mode indicator
-	var modeText string
+// isSubmitFocused returns true if submit button is focused
+func (m AuthModel) isSubmitFocused() bool {
 	if m.mode == ModeLogin {
-		modeText = m.theme.Primary.Render("🔐 Login")
-	} else {
-		modeText = m.theme.Primary.Render("📝 Sign Up")
+		return m.focusIndex == 2
 	}
-	content.WriteString(lipgloss.PlaceHorizontal(40, lipgloss.Center, modeText))
-	content.WriteString("\n\n")
+	return m.focusIndex == 4
+}
 
-	// Form fields
-	fieldStyle := lipgloss.NewStyle().Width(40)
-	labelStyle := m.theme.Subtitle.Width(12)
-
-	// Username
-	usernameLabel := labelStyle.Render("Username:")
-	content.WriteString(fieldStyle.Render(usernameLabel + " " + m.usernameInput.View()))
-	content.WriteString("\n\n")
-
-	// Email (signup only)
-	if m.mode == ModeSignup {
-		emailLabel := labelStyle.Render("Email:")
-		content.WriteString(fieldStyle.Render(emailLabel + " " + m.emailInput.View()))
-		content.WriteString("\n\n")
-	}
-
-	// Password
-	passwordLabel := labelStyle.Render("Password:")
-	content.WriteString(fieldStyle.Render(passwordLabel + " " + m.passwordInput.View()))
-	content.WriteString("\n\n")
-
-	// Confirm password (signup only)
-	if m.mode == ModeSignup {
-		confirmLabel := labelStyle.Render("Confirm:")
-		content.WriteString(fieldStyle.Render(confirmLabel + " " + m.confirmInput.View()))
-		content.WriteString("\n\n")
-	}
-
-	// Loading indicator
-	if m.loading {
-		content.WriteString(lipgloss.PlaceHorizontal(40, lipgloss.Center,
-			m.spinner.View()+" Authenticating..."))
-		content.WriteString("\n\n")
-	}
-
-	// Error message
-	if m.lastError != "" {
-		errorBox := m.theme.ErrorText.
-			Padding(0, 1).
-			Render("⚠ " + m.lastError)
-		content.WriteString(lipgloss.PlaceHorizontal(40, lipgloss.Center, errorBox))
-		content.WriteString("\n\n")
-	}
-
-	// Success message
-	if m.message != "" {
-		successBox := m.theme.SuccessText.
-			Padding(0, 1).
-			Render("✓ " + m.message)
-		content.WriteString(lipgloss.PlaceHorizontal(40, lipgloss.Center, successBox))
-		content.WriteString("\n\n")
-	}
-
-	// Help text
-	var helpLines []string
-	helpLines = append(helpLines, m.theme.DimText.Render("[Tab] Next field"))
-	helpLines = append(helpLines, m.theme.DimText.Render("[Enter] Submit"))
+// toggleMode switches between login and register
+func (m *AuthModel) toggleMode() {
 	if m.mode == ModeLogin {
-		helpLines = append(helpLines, m.theme.DimText.Render("[Ctrl+S] Switch to Sign Up"))
+		m.mode = ModeRegister
 	} else {
-		helpLines = append(helpLines, m.theme.DimText.Render("[Ctrl+S] Switch to Login"))
+		m.mode = ModeLogin
 	}
-	helpLines = append(helpLines, m.theme.DimText.Render("[Esc] Continue as Guest"))
-
-	helpText := strings.Join(helpLines, "  │  ")
-	content.WriteString(lipgloss.PlaceHorizontal(m.width-10, lipgloss.Center, helpText))
-
-	// Center the form in the window
-	formBox := m.theme.Card.
-		Width(50).
-		Padding(2, 4).
-		Render(content.String())
-
-	return lipgloss.Place(
-		m.width,
-		m.height,
-		lipgloss.Center,
-		lipgloss.Center,
-		formBox,
-	)
+	m.focusIndex = 0
+	m.err = nil
+	m.updateFocus()
 }
 
-// SetWidth sets the view width
-func (m *AuthModel) SetWidth(w int) {
-	m.width = w
+// submit handles form submission
+func (m AuthModel) submit() (AuthModel, tea.Cmd) {
+	// Validate
+	if m.usernameInput.Value() == "" {
+		m.err = fmt.Errorf("username is required")
+		return m, nil
+	}
+	
+	if m.mode == ModeRegister && m.emailInput.Value() == "" {
+		m.err = fmt.Errorf("email is required")
+		return m, nil
+	}
+	
+	if m.passwordInput.Value() == "" {
+		m.err = fmt.Errorf("password is required")
+		return m, nil
+	}
+	
+	if m.mode == ModeRegister && m.passwordInput.Value() != m.confirmInput.Value() {
+		m.err = fmt.Errorf("passwords do not match")
+		return m, nil
+	}
+
+	m.loading = true
+	m.err = nil
+
+	if m.mode == ModeLogin {
+		return m, m.doLogin()
+	}
+	return m, m.doRegister()
 }
 
-// SetHeight sets the view height
-func (m *AuthModel) SetHeight(h int) {
-	m.height = h
+// doLogin performs login API call
+func (m AuthModel) doLogin() tea.Cmd {
+	return func() tea.Msg {
+		ctx := context.Background()
+		resp, err := m.apiClient.Login(ctx, m.usernameInput.Value(), m.passwordInput.Value())
+		if err != nil {
+			return AuthErrorMsg{Err: err}
+		}
+		return AuthSuccessMsg{
+			Username: resp.User.Username,
+			Token:    resp.Token,
+			User:     &resp.User,
+		}
+	}
 }
 
-// IsAuthenticated returns whether user logged in
-func (m AuthModel) IsAuthenticated() bool {
-	return m.client.IsAuthenticated()
+// doRegister performs registration API call
+func (m AuthModel) doRegister() tea.Cmd {
+	return func() tea.Msg {
+		ctx := context.Background()
+		resp, err := m.apiClient.Register(ctx, m.usernameInput.Value(), m.emailInput.Value(), m.passwordInput.Value())
+		if err != nil {
+			return AuthErrorMsg{Err: err}
+		}
+		return AuthSuccessMsg{
+			Username: resp.User.Username,
+			Token:    resp.Token,
+			User:     &resp.User,
+		}
+	}
 }
 
-// IsLoggedIn returns whether user just logged in successfully
-func (m AuthModel) IsLoggedIn() bool {
-	return m.loggedIn
+// GetCredentials returns the entered credentials
+func (m AuthModel) GetCredentials() (username, password string) {
+	return m.usernameInput.Value(), m.passwordInput.Value()
 }
 
-// GetUser returns the logged in user
-func (m AuthModel) GetUser() *models.User {
-	return m.user
+// Messages
+
+// AuthSuccessMsg is sent when auth succeeds
+type AuthSuccessMsg struct {
+	Username string
+	Token    string
+	User     *models.UserProfile
 }
 
-// IsInputFocused reports whether any auth field is focused.
-func (m AuthModel) IsInputFocused() bool {
-	return m.usernameInput.Focused() || m.emailInput.Focused() || m.passwordInput.Focused() || m.confirmInput.Focused()
+// AuthErrorMsg is sent when auth fails
+type AuthErrorMsg struct {
+	Err error
 }
-
-// =====================================
-// SKIP MESSAGE
-// =====================================
-
-// AuthSkipMsg signals user wants to continue as guest
-type AuthSkipMsg struct{}

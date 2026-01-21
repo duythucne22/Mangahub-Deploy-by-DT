@@ -1,0 +1,26 @@
+# Railway Deployment Configuration
+# Railway auto-detects Go, but this file provides explicit build/run instructions
+
+[build]
+  builder = "nixpacks"
+  buildCommand = "go build -o bin/server ./cmd/server"
+
+[deploy]
+  startCommand = "./bin/server"
+  healthcheckPath = "/health"
+  healthcheckTimeout = 100
+  restartPolicyType = "on_failure"
+  restartPolicyMaxRetries = 3
+
+[environments.production]
+  # Production environment uses Neon PostgreSQL
+  # Set these as environment variables in Railway dashboard
+  # - DB_HOST (from Neon connection string)
+  # - DB_PORT (usually 5432)
+  # - DB_USER (usually postgres)
+  # - DB_PASSWORD (from Neon)
+  # - DB_NAME (usually neondb or postgres)
+  # - DB_SSLMODE (set to "require")
+  # - JWT_SECRET (generate strong random string)
+  # - ENABLE_TCP=false (Railway doesn't support raw TCP)
+  # - ENABLE_UDP=false (Railway doesn't support UDP)

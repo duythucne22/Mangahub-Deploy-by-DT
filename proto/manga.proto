@@ -2,69 +2,88 @@ syntax = "proto3";
 
 package mangahub.v1;
 
-option go_package = "github.com/nmihtuna204/mangahub/internal/grpc/pb;pb";
+option go_package = "mangahub/internal/protocols/grpc/pb;pb";
 
-// Manga service for internal gRPC communication
+import "google/protobuf/timestamp.proto";
+
 service MangaService {
-  rpc GetManga(GetMangaRequest) returns (MangaResponse);
+  rpc StreamSearch(SearchRequest) returns (stream MangaResponse); // Real-time streaming search
   rpc SearchManga(SearchRequest) returns (SearchResponse);
-  rpc UpdateProgress(ProgressRequest) returns (ProgressResponse);
+  rpc GetManga(GetMangaRequest) returns (MangaResponse);
+
+  // Extra RPCs currently implemented in service.go
+  rpc GetTrendingManga(TrendingRequest) returns (TrendingResponse);
+  rpc AutoSuggest(AutoSuggestRequest) returns (AutoSuggestResponse);
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
 }
 
-// Request to get a single manga by ID
-message GetMangaRequest {
-  string manga_id = 1;
+message SearchRequest {
+  string query = 1;        // FTS query
+  int32 limit = 2;         // Max results (default 20)
+  int32 offset = 3;        // Pagination offset
+  repeated string genre_ids = 4; // matches req.GenreIds in service
+  string status = 5;       // Status filter
 }
 
-// Manga data response
 message MangaResponse {
   string id = 1;
   string title = 2;
-  string author = 3;
-  string artist = 4;
-  string description = 5;
-  string cover_url = 6;
-  string status = 7;
-  string type = 8;
-  repeated string genres = 9;
-  int32 total_chapters = 10;
-  double rating = 11;
-  int32 year = 12;
+  string description = 3;
+  string cover_url = 4;
+  string status = 5;
+  repeated Genre genres = 6; // matches pb.Genre in service
+  int32 comment_count = 7;
+  int32 chat_count = 8;
+  int32 weekly_score = 9;
+  google.protobuf.Timestamp created_at = 10;
+  float relevance_score = 11;
 }
 
-// Search request with filters
-message SearchRequest {
-  string query = 1;
-  repeated string genres = 2;
-  string status = 3;
-  int32 limit = 4;
-  int32 offset = 5;
+message Genre {
+  string id = 1;
+  string name = 2;
 }
 
-// Search results response
 message SearchResponse {
   repeated MangaResponse manga = 1;
   int32 total = 2;
   int32 limit = 3;
   int32 offset = 4;
+  bool has_more = 5;
 }
 
-// Progress update request
-message ProgressRequest {
-  string user_id = 1;
-  string manga_id = 2;
-  int32 current_chapter = 3;
-  string status = 4;
-  int32 rating = 5;
+message GetMangaRequest {
+  string manga_id = 1;
 }
 
-// Progress update response
-message ProgressResponse {
-  string id = 1;
-  string user_id = 2;
-  string manga_id = 3;
-  int32 current_chapter = 4;
-  string status = 5;
-  int32 rating = 6;
-  int64 timestamp = 7;
+message TrendingRequest {
+  int32 limit = 1;
+}
+
+message TrendingResponse {
+  repeated MangaResponse manga = 1;
+}
+
+message AutoSuggestRequest {
+  string prefix = 1;
+  int32 limit = 2;
+}
+
+message AutoSuggestResponse {
+  repeated string suggestions = 1;
+}
+
+message HealthCheckRequest {}
+
+enum HealthStatus {
+  HEALTH_STATUS_UNSPECIFIED = 0;
+  SERVING = 1;
+  NOT_SERVING = 2;
+}
+
+message HealthCheckResponse {
+  HealthStatus status = 1;
+  string message = 2;
+  string version = 3;
+  int64 uptime = 4;
 }
