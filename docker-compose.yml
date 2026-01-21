@@ -1,81 +1,22 @@
-version: '3.8'
-
 services:
-  # HTTP API Server + WebSocket
-  api-server:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: mangahub-api
-    command: /app/api-server
-    ports:
-      - "8080:8080"
-    volumes:
-      - ./configs:/app/configs
-      - ./data:/app/data
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: mangahub-postgres
     environment:
-      - GIN_MODE=release
-    networks:
-      - mangahub-network
+      POSTGRES_USER: mangahub
+      POSTGRES_PASSWORD: mangahub_dev_password
+      POSTGRES_DB: mangahub_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./deployments/schema.sql:/docker-entrypoint-initdb.d/schema.sql
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-
-  # TCP Sync Server
-  tcp-server:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: mangahub-tcp
-    command: /app/tcp-server
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./configs:/app/configs
-    networks:
-      - mangahub-network
-    depends_on:
-      - api-server
-
-  # UDP Notification Server
-  udp-server:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: mangahub-udp
-    command: /app/udp-server
-    ports:
-      - "9091:9091/udp"
-    volumes:
-      - ./configs:/app/configs
-    networks:
-      - mangahub-network
-    depends_on:
-      - api-server
-
-  # gRPC Service
-  grpc-server:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: mangahub-grpc
-    command: /app/grpc-server
-    ports:
-      - "9092:9092"
-    volumes:
-      - ./configs:/app/configs
-      - ./data:/app/data
-    networks:
-      - mangahub-network
-    depends_on:
-      - api-server
-
-networks:
-  mangahub-network:
-    driver: bridge
+      test: ["CMD-SHELL", "pg_isready -U mangahub"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 volumes:
-  mangahub-data:
+  postgres_data:

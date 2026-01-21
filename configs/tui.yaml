@@ -1,0 +1,25 @@
+server:
+  host: localhost
+  http:
+    port: 8080
+  grpc:
+    port: 50051
+  ws:
+    port: 8080
+    path: /ws/chat
+  udp:
+    port: 4000
+  tcp:
+    port: 6000
+
+protocol:
+  preferred_search: grpc
+  enable_udp: true
+  enable_tcp: true
+  enable_websocket: true
+
+ui:
+  theme: dracula
+  refresh_rate_ms: 1000
+  page_size: 20
+  enable_animations: true
