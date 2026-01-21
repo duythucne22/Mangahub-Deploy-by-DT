@@ -20,8 +20,4 @@ func main() {
 	// Test user password
 	hash, _ = bcrypt.GenerateFromPassword([]byte("testpass123"), bcrypt.DefaultCost)
 	fmt.Printf("Password: testpass123\nHash: %s\n\n", string(hash))
-
-	// PRODUCTION ADMIN 
-	hash, _ = bcrypt.GenerateFromPassword([]byte("F4ngYu@n3199"), bcrypt.DefaultCost)
-	fmt.Printf("Password: F4ngYu@n3199\nHash: %s\n\n", string(hash))
 }
