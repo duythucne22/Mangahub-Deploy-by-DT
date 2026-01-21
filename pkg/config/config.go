@@ -198,8 +198,11 @@ func bindEnvVars() {
 	// Logging
 	viper.BindEnv("logging.level", "LOG_LEVEL")
 
-	// gRPC (if needed)
+	// Protocol ports (for local dev - Railway only exposes one port)
 	viper.BindEnv("grpc.port", "GRPC_PORT")
+	viper.BindEnv("tcp.port", "TCP_PORT")
+	viper.BindEnv("udp.port", "UDP_PORT")
+	viper.BindEnv("websocket.port", "WS_PORT")
 }
 
 func setDefaults() {

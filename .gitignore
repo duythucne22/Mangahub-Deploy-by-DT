@@ -77,8 +77,8 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# Generated files
-*.pb.go
+# Generated files (commented out - we commit pb files for Railway builds)
+# *.pb.go
 
 # IDE workspace files
 .vscode/settings.json
