@@ -165,7 +165,6 @@ MangaHub is designed for seamless deployment on Railway with Neon PostgreSQL.
    - Add environment variables:
      ```
      DATABASE_URL=your_neon_connection_string
-     REDIS_URL=your_redis_url (Railway will auto-provide)
      JWT_SECRET=your_secret_key
      PORT=8080
      ```
@@ -175,7 +174,7 @@ MangaHub is designed for seamless deployment on Railway with Neon PostgreSQL.
 
 3. **Verify Deployment**
    ```bash
-   curl https://your-app.railway.app/health
+   curl https://steadfast-strength-production.up.railway.app/health
    ```
 
 For detailed deployment instructions, see [DEPLOYMENT.md](DEPLOYMENT.md).
