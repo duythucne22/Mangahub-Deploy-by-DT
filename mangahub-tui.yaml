@@ -1,0 +1,25 @@
+server:
+  host: steadfast-strength-production.up.railway.app
+  http:
+    port: 443
+  grpc:
+    port: 50051
+  ws:
+    port: 443
+    path: /ws/manga/manga-001
+  udp:
+    port: 4000
+  tcp:
+    port: 6000
+
+protocol:
+  preferred_search: http
+  enable_udp: false
+  enable_tcp: false
+  enable_websocket: true
+
+ui:
+  theme: dracula
+  refresh_rate_ms: 1000
+  page_size: 20
+  enable_animations: true

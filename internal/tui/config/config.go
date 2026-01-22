@@ -137,12 +137,20 @@ func Load(configPath string) (*Config, error) {
 	}
 
 	// Fill in computed fields
-	cfg.Server.HTTP.BaseURL = fmt.Sprintf("http://%s:%d/api/v1", 
-		cfg.Server.Host, cfg.Server.HTTP.Port)
+	// Detect if host is a public domain (uses HTTPS/WSS) vs localhost (HTTP/WS)
+	httpScheme := "http"
+	wsScheme := "ws"
+	if cfg.Server.Host != "localhost" && cfg.Server.Host != "127.0.0.1" {
+		httpScheme = "https"
+		wsScheme = "wss"
+	}
+	
+	cfg.Server.HTTP.BaseURL = fmt.Sprintf("%s://%s:%d/api/v1", 
+		httpScheme, cfg.Server.Host, cfg.Server.HTTP.Port)
 	cfg.Server.GRPC.Addr = fmt.Sprintf("%s:%d", 
 		cfg.Server.Host, cfg.Server.GRPC.Port)
-	cfg.Server.WS.URL = fmt.Sprintf("ws://%s:%d%s", 
-		cfg.Server.Host, cfg.Server.WS.Port, cfg.Server.WS.Path)
+	cfg.Server.WS.URL = fmt.Sprintf("%s://%s:%d%s", 
+		wsScheme, cfg.Server.Host, cfg.Server.WS.Port, cfg.Server.WS.Path)
 	cfg.Server.UDP.Addr = fmt.Sprintf("%s:%d", 
 		cfg.Server.Host, cfg.Server.UDP.Port)
 	cfg.Server.TCP.Addr = fmt.Sprintf("%s:%d", 
